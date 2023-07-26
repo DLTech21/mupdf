@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "gl-app.h"
 
@@ -470,10 +470,14 @@ static void save_attachment_dialog(void)
 			fz_try(ctx)
 			{
 				pdf_obj *fs = pdf_dict_get(ctx, pdf_annot_obj(ctx, ui.selected_annot), PDF_NAME(FS));
-				fz_buffer *buf = pdf_load_embedded_file(ctx, fs);
+				fz_buffer *buf = pdf_load_embedded_file_contents(ctx, fs);
 				fz_save_buffer(ctx, buf, attach_filename);
 				fz_drop_buffer(ctx, buf);
-				trace_action("// save attachment!\n");
+				trace_action("tmp = annot.getFilespec()\n");
+				trace_action("doc.getEmbeddedFileContents(tmp).save(\"%s\");\n", attach_filename);
+				trace_action("tmp = doc.verifyEmbeddedFileChecksum(tmp);\n");
+				trace_action("if (tmp != true)\n");
+				trace_action("  throw new RegressionError('Embedded file checksum:', tmp, 'expected:', true);\n");
 			}
 			fz_catch(ctx)
 			{
@@ -490,30 +494,59 @@ static void open_attachment_dialog(void)
 		ui.dialog = NULL;
 		if (attach_filename[0] != 0)
 		{
+			pdf_obj *fs = NULL;
 			pdf_begin_operation(ctx, pdf, "Embed file attachment");
+			fz_var(fs);
 			fz_try(ctx)
 			{
+				int64_t created, modified;
 				fz_buffer *contents;
-				char *filename;
-				pdf_obj *fs;
+				const char *filename;
 
-				filename = strrchr(attach_filename, '/');
-				if (!filename)
-					filename = strrchr(attach_filename, '\\');
-				if (filename)
-					++filename;
-				else
-					filename = attach_filename;
-
+				filename = fz_basename(attach_filename);
 				contents = fz_read_file(ctx, attach_filename);
-				fs = pdf_add_embedded_file(ctx, pdf, filename, NULL, contents);
-				pdf_dict_put_drop(ctx, pdf_annot_obj(ctx, ui.selected_annot), PDF_NAME(FS), fs);
+				created = fz_stat_ctime(attach_filename);
+				modified = fz_stat_mtime(attach_filename);
+
+				fs = pdf_add_embedded_file(ctx, pdf, filename, NULL, contents,
+					created, modified, 0);
+				pdf_set_annot_filespec(ctx, ui.selected_annot, fs);
 				fz_drop_buffer(ctx, contents);
-				trace_action("// add attachment!\n");
+				trace_action("annot.setFilespec(doc.addEmbeddedFile(\"%s\", null, readFile(\"%s\"), new Date(%d).getTime(), new Date(%d).getTime(), false));\n", filename, attach_filename, created, modified);
 			}
 			fz_always(ctx)
 			{
+				pdf_drop_obj(ctx, fs);
 				pdf_end_operation(ctx, pdf);
+			}
+			fz_catch(ctx)
+			{
+				ui_show_warning_dialog("%s", fz_caught_message(ctx));
+			}
+		}
+	}
+}
+
+static char stamp_image_filename[PATH_MAX];
+
+static void open_stamp_image_dialog(void)
+{
+	if (ui_open_file(stamp_image_filename, "Select file for customized stamp:"))
+	{
+		ui.dialog = NULL;
+		if (stamp_image_filename[0] != 0)
+		{
+			fz_image *img = NULL;
+			fz_var(img);
+			fz_try(ctx)
+			{
+				img = fz_new_image_from_file(ctx, stamp_image_filename);
+				pdf_set_annot_stamp_image(ctx, ui.selected_annot, img);
+				pdf_set_annot_icon_name(ctx, ui.selected_annot, fz_basename(stamp_image_filename));
+			}
+			fz_always(ctx)
+			{
+				fz_drop_image(ctx, img);
 			}
 			fz_catch(ctx)
 			{
@@ -758,23 +791,8 @@ static const char *quadding_names[] = { "Left", "Center", "Right" };
 static const char *font_names[] = { "Cour", "Helv", "TiRo" };
 static const char *lang_names[] = { "", "ja", "ko", "zh-Hans", "zh-Hant" };
 static const char *im_redact_names[] = { "Keep images", "Remove images", "Erase pixels" };
-
-static int should_edit_border(enum pdf_annot_type subtype)
-{
-	switch (subtype) {
-	default:
-		return 0;
-	case PDF_ANNOT_FREE_TEXT:
-		return 1;
-	case PDF_ANNOT_INK:
-	case PDF_ANNOT_LINE:
-	case PDF_ANNOT_SQUARE:
-	case PDF_ANNOT_CIRCLE:
-	case PDF_ANNOT_POLYGON:
-	case PDF_ANNOT_POLY_LINE:
-		return 1;
-	}
-}
+static const char *border_styles[] = { "Solid", "Dashed", "Dotted" };
+static const char *border_intensities[] = { "None", "Small clouds", "Large clouds", "Enormous clouds" };
 
 static int should_edit_color(enum pdf_annot_type subtype)
 {
@@ -810,6 +828,8 @@ static int should_edit_icolor(enum pdf_annot_type subtype)
 	default:
 		return 0;
 	case PDF_ANNOT_LINE:
+	case PDF_ANNOT_POLYGON:
+	case PDF_ANNOT_POLY_LINE:
 	case PDF_ANNOT_SQUARE:
 	case PDF_ANNOT_CIRCLE:
 		return 1;
@@ -908,6 +928,86 @@ document_has_redactions(void)
 		fz_drop_page(ctx, (fz_page *)page);
 	}
 	return has_redact;
+}
+
+static int detect_border_style(enum pdf_border_style style, float width)
+{
+	if (style == PDF_BORDER_STYLE_DASHED)
+	{
+		int count = pdf_annot_border_dash_count(ctx, ui.selected_annot);
+		float dashlen = pdf_annot_border_dash_item(ctx, ui.selected_annot, 0);
+		if ((count == 1 || count == 2) && dashlen < 2 * width)
+			return 2;
+		return 1;
+	}
+	return 0;
+}
+
+static void do_border(void)
+{
+	static int width;
+	static int choice;
+	enum pdf_border_style style;
+
+	width = pdf_annot_border_width(ctx, ui.selected_annot);
+	style = pdf_annot_border_style(ctx, ui.selected_annot);
+
+	width = fz_clampi(width, 0, 12);
+	ui_label("Border: %d", width);
+	if (ui_slider(&width, 0, 12, 100))
+	{
+		pdf_set_annot_border_width(ctx, ui.selected_annot, width);
+		trace_action("annot.setBorderWidth(%d);\n", width);
+	}
+
+	width = fz_max(width, 1);
+
+	choice = detect_border_style(style, width);
+	ui_label("Border style:");
+	choice = ui_select("BorderStyle", border_styles[choice], border_styles, nelem(border_styles));
+	if (choice != -1)
+	{
+		pdf_clear_annot_border_dash(ctx, ui.selected_annot);
+		trace_action("annot.clearBorderDash();\n");
+		if (choice == 0)
+		{
+			pdf_set_annot_border_style(ctx, ui.selected_annot, PDF_BORDER_STYLE_SOLID);
+			trace_action("annot.setBorderType('Solid');\n");
+		}
+		else if (choice == 1)
+		{
+			pdf_set_annot_border_style(ctx, ui.selected_annot, PDF_BORDER_STYLE_DASHED);
+			pdf_add_annot_border_dash_item(ctx, ui.selected_annot, 3.0f * width);
+			trace_action("annot.setBorderType('Dashed');\n");
+			trace_action("annot.addBorderDashItem(%g);\n", 3.0f * width);
+		}
+		else if (choice == 2)
+		{
+			pdf_set_annot_border_style(ctx, ui.selected_annot, PDF_BORDER_STYLE_DASHED);
+			pdf_add_annot_border_dash_item(ctx, ui.selected_annot, 1.0f * width);
+			trace_action("annot.setBorderType('Dashed');\n");
+			trace_action("annot.addBorderDashItem(%g);\n", 1.0f * width);
+		}
+	}
+
+	if (pdf_annot_has_border_effect(ctx, ui.selected_annot))
+	{
+		static int intensity;
+		intensity = fz_clampi(pdf_annot_border_effect_intensity(ctx, ui.selected_annot), 0, 3);
+		if (pdf_annot_border_effect(ctx, ui.selected_annot) == PDF_BORDER_EFFECT_NONE)
+			intensity = 0;
+
+		ui_label("Border effect:");
+		intensity = ui_select("BorderEffect", border_intensities[intensity], border_intensities, nelem(border_intensities));
+		if (intensity != -1)
+		{
+			enum pdf_border_effect effect = intensity ? PDF_BORDER_EFFECT_CLOUDY : PDF_BORDER_EFFECT_NONE;
+			pdf_set_annot_border_effect(ctx, ui.selected_annot, effect);
+			pdf_set_annot_border_effect_intensity(ctx, ui.selected_annot, intensity);
+			trace_action("annot.setBorderEffect('%s');\n", effect ? "Cloudy" : "None");
+			trace_action("annot.setBorderEffectIntensity(%d);\n", intensity);
+		}
+	}
 }
 
 void do_annotate_panel(void)
@@ -1048,7 +1148,7 @@ void do_annotate_panel(void)
 			ui_spacer();
 		}
 
-		if (subtype == PDF_ANNOT_LINE)
+		if (subtype == PDF_ANNOT_LINE || subtype == PDF_ANNOT_POLY_LINE)
 		{
 			enum pdf_line_ending s, e;
 			int s_choice, e_choice;
@@ -1113,17 +1213,8 @@ void do_annotate_panel(void)
 			}
 		}
 
-		if (should_edit_border(subtype))
-		{
-			static int border;
-			border = pdf_annot_border(ctx, ui.selected_annot);
-			ui_label("Border: %d", border);
-			if (ui_slider(&border, 0, 12, 100))
-			{
-				trace_action("annot.setBorder(%d);\n", border);
-				pdf_set_annot_border(ctx, ui.selected_annot, border);
-			}
-		}
+		if (pdf_annot_has_border(ctx, ui.selected_annot))
+			do_border();
 
 		if (should_edit_color(subtype))
 			do_annotate_color("Color", pdf_annot_color, pdf_set_annot_color);
@@ -1206,17 +1297,30 @@ void do_annotate_panel(void)
 			}
 		}
 
-		if (pdf_annot_type(ctx, ui.selected_annot) == PDF_ANNOT_FILE_ATTACHMENT)
+		if (pdf_annot_type(ctx, ui.selected_annot) == PDF_ANNOT_STAMP)
 		{
 			char attname[PATH_MAX];
-			pdf_obj *fs = pdf_dict_get(ctx, pdf_annot_obj(ctx, ui.selected_annot), PDF_NAME(FS));
+			if (ui_button("Image..."))
+			{
+				fz_dirname(attname, filename, sizeof attname);
+				ui_init_open_file(attname, NULL);
+				ui.dialog = open_stamp_image_dialog;
+			}
+		}
+
+		if (pdf_annot_type(ctx, ui.selected_annot) == PDF_ANNOT_FILE_ATTACHMENT)
+		{
+			pdf_embedded_file_params params;
+			char attname[PATH_MAX];
+			pdf_obj *fs = pdf_annot_filespec(ctx, ui.selected_annot);
 			if (pdf_is_embedded_file(ctx, fs))
 			{
 				if (ui_button("Save..."))
 				{
 					fz_dirname(attname, filename, sizeof attname);
 					fz_strlcat(attname, "/", sizeof attname);
-					fz_strlcat(attname, pdf_embedded_file_name(ctx, fs), sizeof attname);
+					pdf_get_embedded_file_params(ctx, fs, &params);
+					fz_strlcat(attname, params.filename, sizeof attname);
 					ui_init_save_file(attname, NULL);
 					ui.dialog = save_attachment_dialog;
 				}
@@ -1512,7 +1616,7 @@ static void do_edit_icon(fz_irect canvas_area, fz_irect area, fz_rect *rect)
 	}
 }
 
-static void do_edit_rect(fz_irect canvas_area, fz_irect area, fz_rect *rect)
+static void do_edit_rect(fz_irect canvas_area, fz_irect area, fz_rect *rect, int lock_aspect)
 {
 	enum {
 		ER_N=1, ER_E=2, ER_S=4, ER_W=8,
@@ -1554,6 +1658,28 @@ static void do_edit_rect(fz_irect canvas_area, fz_irect area, fz_rect *rect)
 		if (rect->y1 < rect->y0) { float t = rect->y1; rect->y1 = rect->y0; rect->y0 = t; }
 		if (rect->x1 < rect->x0 + 10) rect->x1 = rect->x0 + 10;
 		if (rect->y1 < rect->y0 + 10) rect->y1 = rect->y0 + 10;
+
+		if (lock_aspect)
+		{
+			float aspect = (start_rect.x1 - start_rect.x0) / (start_rect.y1 - start_rect.y0);
+			switch (state)
+			{
+			case ER_SW:
+			case ER_NW:
+				rect->x0 = rect->x1 - (rect->y1 - rect->y0) * aspect;
+				break;
+			case ER_NE:
+			case ER_SE:
+			case ER_N:
+			case ER_S:
+				rect->x1 = rect->x0 + (rect->y1 - rect->y0) * aspect;
+				break;
+			case ER_E:
+			case ER_W:
+				rect->y1 = rect->y0 + (rect->x1 - rect->x0) / aspect;
+				break;
+			}
+		}
 
 		/* cancel on right click */
 		if (ui.right)
@@ -1924,7 +2050,7 @@ void do_annotate_canvas(fz_irect canvas_area)
 
 			/* Popup window */
 			case PDF_ANNOT_POPUP:
-				do_edit_rect(canvas_area, area, &bounds);
+				do_edit_rect(canvas_area, area, &bounds, 0);
 				break;
 
 			/* Icons */
@@ -1936,11 +2062,11 @@ void do_annotate_canvas(fz_irect canvas_area)
 				break;
 
 			case PDF_ANNOT_STAMP:
-				do_edit_rect(canvas_area, area, &bounds);
+				do_edit_rect(canvas_area, area, &bounds, 1);
 				break;
 
 			case PDF_ANNOT_FREE_TEXT:
-				do_edit_rect(canvas_area, area, &bounds);
+				do_edit_rect(canvas_area, area, &bounds, 0);
 				break;
 
 			/* Drawings */
@@ -1949,7 +2075,7 @@ void do_annotate_canvas(fz_irect canvas_area)
 				break;
 			case PDF_ANNOT_CIRCLE:
 			case PDF_ANNOT_SQUARE:
-				do_edit_rect(canvas_area, area, &bounds);
+				do_edit_rect(canvas_area, area, &bounds, 0);
 				break;
 			case PDF_ANNOT_POLYGON:
 				if (is_draw_mode)

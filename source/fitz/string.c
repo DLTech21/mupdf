@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 
@@ -36,11 +36,55 @@
 #include <windows.h> /* for MultiByteToWideChar etc. */
 #endif
 
-static inline int
+#include "utfdata.h"
+
+static const int *
+fz_ucd_bsearch(int c, const int *t, int n, int ne)
+{
+	const int *p;
+	int m;
+	while (n > 1)
+	{
+		m = n/2;
+		p = t + m*ne;
+		if (c >= p[0])
+		{
+			t = p;
+			n = n - m;
+		}
+		else
+		{
+			n = m;
+		}
+	}
+	if (n && c >= t[0])
+		return t;
+	return 0;
+}
+
+int
 fz_tolower(int c)
 {
-	if (c >= 'A' && c <= 'Z')
-		return c + 32;
+	const int *p;
+	p = fz_ucd_bsearch(c, ucd_tolower2, nelem(ucd_tolower2) / 3, 3);
+	if (p && c >= p[0] && c <= p[1])
+		return c + p[2];
+	p = fz_ucd_bsearch(c, ucd_tolower1, nelem(ucd_tolower1) / 2, 2);
+	if (p && c == p[0])
+		return c + p[1];
+	return c;
+}
+
+int
+fz_toupper(int c)
+{
+	const int *p;
+	p = fz_ucd_bsearch(c, ucd_toupper2, nelem(ucd_toupper2) / 3, 3);
+	if (p && c >= p[0] && c <= p[1])
+		return c + p[2];
+	p = fz_ucd_bsearch(c, ucd_toupper1, nelem(ucd_toupper1) / 2, 2);
+	if (p && c == p[0])
+		return c + p[1];
 	return c;
 }
 
@@ -157,6 +201,17 @@ fz_dirname(char *dir, const char *path, size_t n)
 	dir[i+1] = 0;
 }
 
+const char *
+fz_basename(const char *path)
+{
+	const char *name = strrchr(path, '/');
+	if (!name)
+		name = strrchr(path, '\\');
+	if (!name)
+		return path;
+	return name + 1;
+}
+
 #ifdef _WIN32
 
 char *fz_realpath(const char *path, char *buf)
@@ -200,6 +255,14 @@ static inline int tohex(int c)
 	return 0;
 }
 
+#define URIRESERVED ";/?:@&=+$,"
+#define URIALPHA "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+#define URIDIGIT "0123456789"
+#define URIMARK "-_.!~*'()"
+#define URIUNESCAPED URIALPHA URIDIGIT URIMARK
+#define HEX "0123456789ABCDEF"
+
+/* Same as fz_decode_uri_component but in-place */
 char *
 fz_urldecode(char *url)
 {
@@ -221,6 +284,100 @@ fz_urldecode(char *url)
 	}
 	*p = 0;
 	return url;
+}
+
+char *
+fz_decode_uri_component(fz_context *ctx, const char *s)
+{
+	char *uri = fz_malloc(ctx, strlen(s) + 1);
+	char *p = uri;
+	while (*s)
+	{
+		int c = (unsigned char) *s++;
+		if (c == '%' && ishex(s[0]) && ishex(s[1]))
+		{
+			int a = tohex(*s++);
+			int b = tohex(*s++);
+			*p++ = a << 4 | b;
+		}
+		else
+		{
+			*p++ = c;
+		}
+	}
+	*p = 0;
+	return uri;
+}
+
+char *
+fz_decode_uri(fz_context *ctx, const char *s)
+{
+	char *uri = fz_malloc(ctx, strlen(s) + 1);
+	char *p = uri;
+	while (*s)
+	{
+		int c = (unsigned char) *s++;
+		if (c == '%' && ishex(s[0]) && ishex(s[1]))
+		{
+			int a = tohex(*s++);
+			int b = tohex(*s++);
+			int c = a << 4 | b;
+			if (strchr(URIRESERVED "#", c)) {
+				*p++ = '%';
+				*p++ = HEX[a];
+				*p++ = HEX[b];
+			} else {
+				*p++ = c;
+			}
+		}
+		else
+		{
+			*p++ = c;
+		}
+	}
+	*p = 0;
+	return uri;
+}
+
+static char *
+fz_encode_uri_imp(fz_context *ctx, const char *s, const char *unescaped)
+{
+	char *uri = fz_malloc(ctx, strlen(s) * 3 + 1); /* allocate enough for worst case */
+	char *p = uri;
+	while (*s)
+	{
+		int c = (unsigned char) *s++;
+		if (strchr(unescaped, c))
+		{
+			*p++ = c;
+		}
+		else
+		{
+			*p++ = '%';
+			*p++ = HEX[(c >> 4) & 15];
+			*p++ = HEX[(c) & 15];
+		}
+	}
+	*p = 0;
+	return uri;
+}
+
+char *
+fz_encode_uri_component(fz_context *ctx, const char *s)
+{
+	return fz_encode_uri_imp(ctx, s, URIUNESCAPED);
+}
+
+char *
+fz_encode_uri_pathname(fz_context *ctx, const char *s)
+{
+	return fz_encode_uri_imp(ctx, s, URIUNESCAPED "/");
+}
+
+char *
+fz_encode_uri(fz_context *ctx, const char *s)
+{
+	return fz_encode_uri_imp(ctx, s, URIUNESCAPED URIRESERVED "#");
 }
 
 void
@@ -615,6 +772,9 @@ const char *fz_parse_page_range(fz_context *ctx, const char *s, int *a, int *b, 
 	}
 	else
 		*b = *a;
+
+	if (*a < 0) *a = n + 1 + *a;
+	if (*b < 0) *b = n + 1 + *b;
 
 	*a = fz_clampi(*a, 1, n);
 	*b = fz_clampi(*b, 1, n);

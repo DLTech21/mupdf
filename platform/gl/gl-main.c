@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "gl-app.h"
 
@@ -42,6 +42,7 @@
 #endif
 
 #ifndef _WIN32
+#include <sys/stat.h> /* for mkdir */
 #include <unistd.h> /* for getcwd */
 #include <spawn.h> /* for posix_spawn */
 extern char **environ; /* see environ (7) */
@@ -59,6 +60,7 @@ void glutLeaveMainLoop(void)
 #endif
 
 fz_context *ctx = NULL;
+fz_colorspace *profile = NULL;
 pdf_document *pdf = NULL;
 pdf_page *page = NULL;
 fz_stext_page *page_text = NULL;
@@ -86,15 +88,15 @@ static void open_browser(const char *uri)
 	int err;
 #endif
 
-	/* Relative file:// URI, make it absolute! */
-	if (!strncmp(uri, "file://", 7) && uri[7] != '/')
+	/* Relative file: URI, make it absolute! */
+	if (!strncmp(uri, "file:", 5) && uri[5] != '/')
 	{
 		char buf_base[PATH_MAX];
 		char buf_cwd[PATH_MAX];
 		fz_dirname(buf_base, filename, sizeof buf_base);
 		if (getcwd(buf_cwd, sizeof buf_cwd))
 		{
-			fz_snprintf(buf, sizeof buf, "file://%s/%s/%s", buf_cwd, buf_base, uri+7);
+			fz_snprintf(buf, sizeof buf, "file://%s/%s/%s", buf_cwd, buf_base, uri+5);
 			fz_cleanname(buf+7);
 			uri = buf;
 		}
@@ -122,7 +124,7 @@ static void open_browser(const char *uri)
 	argv[0] = (char*) browser;
 	argv[1] = (char*) uri;
 	argv[2] = NULL;
-	err = posix_spawn(&pid, browser, NULL, NULL, argv, environ);
+	err = posix_spawnp(&pid, browser, NULL, NULL, argv, environ);
 	if (err)
 		fz_warn(ctx, "cannot spawn browser '%s': %s", browser, strerror(err));
 
@@ -130,7 +132,7 @@ static void open_browser(const char *uri)
 }
 
 static const int zoom_list[] = {
-	24, 36, 48, 60, 72, 84, 96, 108,
+	6, 12, 24, 36, 48, 60, 72, 84, 96, 108,
 	120, 144, 168, 192, 228, 264,
 	300, 350, 400, 450, 500, 550, 600
 };
@@ -205,7 +207,12 @@ static int canvas_y = 0, canvas_h = 100;
 
 static int outline_w = 14; /* to be scaled by lineheight */
 static int annotate_w = 12; /* to be scaled by lineheight */
+static int console_h = 14; /* to be scaled by lineheight */
 
+static int outline_start_x = 0;
+static int console_start_y = 0;
+
+static int oldbox = FZ_MEDIA_BOX, currentbox = FZ_MEDIA_BOX;
 static int oldtint = 0, currenttint = 0;
 static int oldinvert = 0, currentinvert = 0;
 static int oldicc = 1, currenticc = 1;
@@ -222,10 +229,14 @@ static char *reflow_options = NULL;
 static int isfullscreen = 0;
 static int showoutline = 0;
 static int showundo = 0;
+static int showlayers = 0;
 static int showlinks = 0;
 static int showsearch = 0;
+static int showconsole = 0;
 int showannotate = 0;
 int showform = 0;
+
+static pdf_js_console gl_js_console;
 
 static const char *tooltip = NULL;
 
@@ -488,18 +499,72 @@ static void save_history(void)
 	js_freestate(J);
 }
 
-static int convert_to_accel_path(char outname[], char *absname, size_t len)
+static int
+fz_mkdir(char *path)
+{
+#ifdef _WIN32
+	int ret;
+	wchar_t *wpath = fz_wchar_from_utf8(path);
+
+	if (wpath == NULL)
+		return -1;
+
+	ret = _wmkdir(wpath);
+
+	free(wpath);
+
+	return ret;
+#else
+	return mkdir(path, S_IRWXU | S_IRWXG | S_IRWXO);
+#endif
+}
+
+static int create_accel_path(char outname[], size_t len, int create, const char *absname, ...)
+{
+	va_list args;
+	char *s = outname;
+	size_t z, remain = len;
+	char *arg;
+
+	va_start(args, absname);
+
+	while ((arg = va_arg(args, char *)) != NULL)
+	{
+		z = fz_snprintf(s, remain, "%s", arg);
+		if (z+1 > remain)
+			goto fail; /* won't fit */
+
+		if (create)
+			(void) fz_mkdir(outname);
+		if (!fz_is_directory(ctx, outname))
+			goto fail; /* directory creation failed, or that dir doesn't exist! */
+#ifdef _WIN32
+		s[z] = '\\';
+#else
+		s[z] = '/';
+#endif
+		s[z+1] = 0;
+		s += z+1;
+		remain -= z+1;
+	}
+
+	if (fz_snprintf(s, remain, "%s.accel", absname) >= remain)
+		goto fail; /* won't fit */
+
+	va_end(args);
+
+	return 1;
+
+fail:
+	va_end(args);
+
+	return 0;
+}
+
+static int convert_to_accel_path(char outname[], char *absname, size_t len, int create)
 {
 	char *tmpdir;
 	char *s;
-
-	tmpdir = getenv("TEMP");
-	if (!tmpdir)
-		tmpdir = getenv("TMP");
-	if (!tmpdir)
-		tmpdir = "/var/tmp";
-	if (!fz_is_directory(ctx, tmpdir))
-		tmpdir = "/tmp";
 
 	if (absname[0] == '/' || absname[0] == '\\')
 		++absname;
@@ -511,17 +576,34 @@ static int convert_to_accel_path(char outname[], char *absname, size_t len)
 		++s;
 	}
 
-	if (fz_snprintf(outname, len, "%s/%s.accel", tmpdir, absname) >= len)
-		return 0;
-	return 1;
+#ifdef _WIN32
+	tmpdir = getenv("USERPROFILE");
+	if (tmpdir && create_accel_path(outname, len, create, absname, tmpdir, ".config", "mupdf", NULL))
+		return 1; /* OK! */
+	/* TEMP and TMP are user-specific on modern windows. */
+	tmpdir = getenv("TEMP");
+	if (tmpdir && create_accel_path(outname, len, create, absname, tmpdir, "mupdf", NULL))
+		return 1; /* OK! */
+	tmpdir = getenv("TMP");
+	if (tmpdir && create_accel_path(outname, len, create, absname, tmpdir, "mupdf", NULL))
+		return 1; /* OK! */
+#else
+	tmpdir = getenv("XDG_CACHE_HOME");
+	if (tmpdir && create_accel_path(outname, len, create, absname, tmpdir, "mupdf", NULL))
+		return 1; /* OK! */
+	tmpdir = getenv("HOME");
+	if (tmpdir && create_accel_path(outname, len, create, absname, tmpdir, ".cache", "mupdf", NULL))
+		return 1; /* OK! */
+#endif
+	return 0; /* Fail */
 }
 
-static int get_accelerator_filename(char outname[], size_t len)
+static int get_accelerator_filename(char outname[], size_t len, int create)
 {
 	char absname[PATH_MAX];
 	if (!fz_realpath(filename, absname))
 		return 0;
-	if (!convert_to_accel_path(outname, absname, len))
+	if (!convert_to_accel_path(outname, absname, len, create))
 		return 0;
 	return 1;
 }
@@ -534,7 +616,7 @@ static void save_accelerator(void)
 		return;
 	if (!fz_document_supports_accelerator(ctx, doc))
 		return;
-	if (!get_accelerator_filename(absname, sizeof(absname)))
+	if (!get_accelerator_filename(absname, sizeof(absname), 1))
 		return;
 
 	fz_save_accelerator(ctx, doc, absname);
@@ -555,9 +637,11 @@ static char *help_dialog_text =
 	"\n"
 	"\n"
 	"F1 - show this message\n"
+	"` F12 - show javascript console\n"
 	"i - show document information\n"
 	"o - show document outline\n"
 	"u - show undo history\n"
+	"Y - show layer list\n"
 	"a - show annotation editor\n"
 	"R - show redaction editor\n"
 	"L - highlight links\n"
@@ -568,6 +652,7 @@ static char *help_dialog_text =
 	"\n"
 	"< - decrease E-book font size\n"
 	"> - increase E-book font size\n"
+	"B - cycle between MediaBox, CropBox, ArtBox, etc.\n"
 	"A - toggle anti-aliasing\n"
 	"I - toggle inverted color mode\n"
 	"C - toggle tinted color mode\n"
@@ -620,7 +705,7 @@ static void help_dialog(void)
 		ui.dialog = NULL;
 	ui_spacer();
 	ui_layout(ALL, BOTH, CENTER, ui.padsize, ui.padsize);
-	ui_label_with_scrollbar(help_dialog_text, 0, 0, &scroll);
+	ui_label_with_scrollbar(help_dialog_text, 0, 0, &scroll, NULL);
 	ui_dialog_end();
 }
 
@@ -639,7 +724,7 @@ static void info_dialog(void)
 	ui_layout(ALL, BOTH, CENTER, ui.padsize, ui.padsize);
 
 	info_text = format_info_text();
-	ui_label_with_scrollbar((char*)fz_string_from_buffer(ctx, info_text), 0, 0, &scroll);
+	ui_label_with_scrollbar((char*)fz_string_from_buffer(ctx, info_text), 0, 0, &scroll, NULL);
 	fz_drop_buffer(ctx, info_text);
 
 	ui_dialog_end();
@@ -772,7 +857,7 @@ void trace_page_update(void)
 void trace_save_snapshot(void)
 {
 	static int trace_idx = 1;
-	trace_action("page.toPixmap(Identity, DeviceRGB).saveAsPNG(\"trace-%03d.png\");\n", trace_idx++);
+	trace_action("page.toPixmap(Matrix.identity, ColorSpace.DeviceRGB).saveAsPNG(\"trace-%03d.png\");\n", trace_idx++);
 }
 
 static int document_shown_as_dirty = 0;
@@ -780,19 +865,13 @@ static int document_shown_as_dirty = 0;
 void update_title(void)
 {
 	char buf[256];
-	char *title = "MuPDF/GL";
+	const char *title = "MuPDF/GL";
 	char *extra = "";
 	size_t n;
 
 	int nc = fz_count_chapters(ctx, doc);
 
-	title = strrchr(filename, '/');
-	if (!title)
-		title = strrchr(filename, '\\');
-	if (title)
-		++title;
-	else
-		title = filename;
+	title = fz_basename(filename);
 
 	document_shown_as_dirty = pdf && pdf_has_unsaved_changes(ctx, pdf);
 	if (document_shown_as_dirty)
@@ -950,7 +1029,7 @@ void load_page(void)
 	}
 
 	/* compute bounds here for initial window size */
-	page_bounds = fz_bound_page(ctx, fzpage);
+	page_bounds = fz_bound_page_box(ctx, fzpage, currentbox);
 	transform_page();
 
 	area = fz_irect_from_rect(draw_page_bounds);
@@ -966,6 +1045,7 @@ static void render_page(void)
 	fz_pixmap *pix;
 	fz_device *dev;
 
+	page_bounds = fz_bound_page_box(ctx, fzpage, currentbox);
 	transform_page();
 
 	fz_set_aa_level(ctx, currentaa);
@@ -975,23 +1055,36 @@ static void render_page(void)
 		fz_drop_pixmap(ctx, page_contents);
 		page_contents = NULL;
 
-		bbox = fz_round_rect(fz_transform_rect(fz_bound_page(ctx, fzpage), draw_page_ctm));
-		page_contents = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, seps, 0);
+		bbox = fz_round_rect(fz_transform_rect(fz_bound_page_box(ctx, fzpage, currentbox), draw_page_ctm));
+		page_contents = fz_new_pixmap_with_bbox(ctx, profile, bbox, seps, 0);
 		fz_clear_pixmap(ctx, page_contents);
 
 		dev = fz_new_draw_device(ctx, draw_page_ctm, page_contents);
-		fz_run_page_contents(ctx, fzpage, dev, fz_identity, NULL);
-		fz_close_device(ctx, dev);
-		fz_drop_device(ctx, dev);
+
+		fz_try(ctx)
+		{
+			fz_run_page_contents(ctx, fzpage, dev, fz_identity, NULL);
+			fz_close_device(ctx, dev);
+		}
+		fz_always(ctx)
+			fz_drop_device(ctx, dev);
+		fz_catch(ctx)
+			fz_rethrow(ctx);
 	}
 
-	pix = fz_clone_pixmap_area_with_different_seps(ctx, page_contents, NULL, fz_device_rgb(ctx), NULL, fz_default_color_params, NULL);
+	pix = fz_clone_pixmap_area_with_different_seps(ctx, page_contents, NULL, profile, NULL, fz_default_color_params, NULL);
 	{
 		dev = fz_new_draw_device(ctx, draw_page_ctm, pix);
-		fz_run_page_annots(ctx, fzpage, dev, fz_identity, NULL);
-		fz_run_page_widgets(ctx, fzpage, dev, fz_identity, NULL);
-		fz_close_device(ctx, dev);
-		fz_drop_device(ctx, dev);
+		fz_try(ctx)
+		{
+			fz_run_page_annots(ctx, fzpage, dev, fz_identity, NULL);
+			fz_run_page_widgets(ctx, fzpage, dev, fz_identity, NULL);
+			fz_close_device(ctx, dev);
+		}
+		fz_always(ctx)
+			fz_drop_device(ctx, dev);
+		fz_catch(ctx)
+			fz_rethrow(ctx);
 	}
 
 	if (currentinvert)
@@ -1030,7 +1123,8 @@ void render_page_if_changed(void)
 		oldtint != currenttint ||
 		oldicc != currenticc ||
 		oldseparations != currentseparations ||
-		oldaa != currentaa)
+		oldaa != currentaa ||
+		oldbox != currentbox)
 	{
 		page_contents_changed = 1;
 	}
@@ -1046,6 +1140,7 @@ void render_page_if_changed(void)
 		oldicc = currenticc;
 		oldseparations = currentseparations;
 		oldaa = currentaa;
+		oldbox = currentbox;
 		page_contents_changed = 0;
 		page_annots_changed = 0;
 	}
@@ -1336,6 +1431,41 @@ static void do_undo(void)
 	ui_panel_end();
 }
 
+static void do_layers(void)
+{
+	const char *name;
+	int n, i, on;
+
+	ui_layout(L, BOTH, NW, 0, 0);
+	ui_panel_begin(outline_w, 0, ui.padsize*2, ui.padsize*2, 1);
+	ui_layout(T, X, NW, ui.padsize, ui.padsize);
+	ui_label("Layers:");
+	ui_layout(T, X, NW, ui.padsize*2, ui.padsize);
+
+	if (pdf)
+	{
+		n = pdf_count_layers(ctx, pdf);
+		for (i = 0; i < n; ++i)
+		{
+			name = pdf_layer_name(ctx, pdf, i);
+			on = pdf_layer_is_enabled(ctx, pdf, i);
+			if (ui_checkbox(name, &on))
+			{
+				pdf_enable_layer(ctx, pdf, i, on);
+				page_contents_changed = 1;
+			}
+		}
+		if (n == 0)
+			ui_label("None");
+	}
+	else
+	{
+		ui_label("None");
+	}
+
+	ui_panel_end();
+}
+
 static void do_links(fz_link *link)
 {
 	fz_rect bounds;
@@ -1522,11 +1652,13 @@ static void toggle_fullscreen(void)
 static void shrinkwrap(void)
 {
 	int w = page_tex.w;
-	if (showoutline || showundo)
+	int h = page_tex.h;
+	if (showoutline || showundo || showlayers)
 		w += outline_w + 4;
 	if (showannotate)
 		w += annotate_w;
-	int h = page_tex.h;
+	if (showconsole)
+		h += console_h;
 	if (screen_w > 0 && w > screen_w)
 		w = screen_w;
 	if (screen_h > 0 && h > screen_h)
@@ -1659,8 +1791,20 @@ static void load_document(void)
 	fz_drop_outline(ctx, outline);
 	fz_drop_document(ctx, doc);
 
+	if (!strncmp(filename, "file://", 7))
+	{
+		anchor = strchr(filename + 7, '#');
+		if (anchor)
+		{
+			memmove(anchor + 1, anchor, strlen(anchor) + 1);
+			*anchor = 0;
+			anchor++;
+		}
+		memmove(filename, filename + 7, strlen(filename));
+	}
+
 	/* If there was an accelerator to load, what would it be called? */
-	if (get_accelerator_filename(accelpath, sizeof(accelpath)))
+	if (get_accelerator_filename(accelpath, sizeof(accelpath), 0))
 	{
 		/* Check whether that file exists, and isn't older than
 		 * the document. */
@@ -1684,7 +1828,7 @@ static void load_document(void)
 		}
 	}
 
-	trace_action("doc = new Document(%q);\n", filename);
+	trace_action("doc = Document.openDocument(%q);\n", filename);
 
 	doc = fz_open_accelerated_document(ctx, filename, accel);
 	pdf = pdf_specifics(ctx, doc);
@@ -1743,6 +1887,7 @@ static void load_document(void)
 		{
 			trace_action("doc.enableJS();\n");
 			pdf_enable_js(ctx, pdf);
+			pdf_js_set_console(ctx, pdf, &gl_js_console, NULL);
 		}
 
 		reload_or_start_journalling();
@@ -1771,13 +1916,7 @@ static void load_document(void)
 			jump_to_location(location);
 		else
 		{
-			location.chapter = 0;
-			if (pdf)
-				location.page = pdf_lookup_anchor(ctx, pdf, anchor, NULL, NULL);
-			else
-				location.page = -1;
-			if (location.page < 0)
-				location = fz_resolve_link(ctx, doc, anchor, NULL, NULL);
+			location = fz_resolve_link(ctx, doc, anchor, NULL, NULL);
 			if (location.page < 0)
 				fz_warn(ctx, "cannot find location: %s", anchor);
 			else
@@ -1849,7 +1988,7 @@ static void toggle_outline(void)
 	if (outline)
 	{
 		showoutline = !showoutline;
-		showundo = 0;
+		showundo = showlayers = 0;
 		if (canvas_w == page_tex.w && canvas_h == page_tex.h)
 			shrinkwrap();
 	}
@@ -1858,7 +1997,15 @@ static void toggle_outline(void)
 static void toggle_undo(void)
 {
 	showundo = !showundo;
-	showoutline = 0;
+	showoutline = showlayers = 0;
+	if (canvas_w == page_tex.w && canvas_h == page_tex.h)
+		shrinkwrap();
+}
+
+static void toggle_layers(void)
+{
+	showlayers = !showlayers;
+	showoutline = showundo = 0;
 	if (canvas_w == page_tex.w && canvas_h == page_tex.h)
 		shrinkwrap();
 }
@@ -1968,6 +2115,206 @@ static void clear_search(void)
 	search_hit_count = 0;
 }
 
+#define MAX_CONSOLE_LINES 500
+
+static fz_buffer *console_buffer;
+static int console_scroll = 0;
+static int console_sticky = 1;
+static int console_lines = 0;
+static struct readline console_readline;
+static void (*warning_callback)(void *, const char *) = NULL;
+static void (*error_callback)(void *, const char *) = NULL;
+static void *warning_user = NULL;
+static void *error_user = NULL;
+
+static void
+remove_oldest_console_line()
+{
+	unsigned char *s;
+	size_t size = fz_buffer_storage(ctx, console_buffer, &s);
+	unsigned char *p = s;
+	unsigned char *e = s + size;
+
+	while (p < e && *p != '\n')
+		p++;
+
+	if (p < e && *p == '\n')
+	{
+		p++;
+		memmove(s, p, e - p);
+		fz_resize_buffer(ctx, console_buffer, e - p);
+		console_lines--;
+	}
+}
+
+static void
+gl_js_console_write(void *user, const char *message)
+{
+	const char *p = NULL;
+
+	if (message == NULL)
+		return;
+
+	p = message;
+	while (*p)
+	{
+		if (*p == '\n')
+			console_lines++;
+		if (console_lines >= MAX_CONSOLE_LINES)
+			remove_oldest_console_line();
+		if (*p)
+			fz_append_byte(ctx, console_buffer, *p);
+		p++;
+	}
+}
+
+static void
+gl_js_console_show(void *user)
+{
+	if (showconsole)
+		return;
+
+	showconsole = 1;
+	if (canvas_w == page_tex.w && canvas_h == page_tex.h)
+		shrinkwrap();
+	ui.focus = &console_readline;
+}
+
+static void
+gl_js_console_hide(void *user)
+{
+	if (!showconsole)
+		return;
+
+	showconsole = 0;
+	if (canvas_w == page_tex.w && canvas_h == page_tex.h)
+		shrinkwrap();
+	ui.focus = NULL;
+}
+
+static void
+gl_js_console_clear(void *user)
+{
+	fz_resize_buffer(ctx, console_buffer, 0);
+	console_lines = 0;
+}
+
+static void console_warn(void *user, const char *message)
+{
+	gl_js_console_write(ctx, "\nwarning: ");
+	gl_js_console_write(ctx, message);
+	if (warning_callback)
+		warning_callback(warning_user, message);
+}
+
+static void console_err(void *user, const char *message)
+{
+	gl_js_console_write(ctx, "\nerror: ");
+	gl_js_console_write(ctx, message);
+	if (error_callback)
+		error_callback(error_user, message);
+}
+
+static void console_init(void)
+{
+	ui_readline_init(&console_readline, NULL);
+
+	console_buffer = fz_new_buffer(ctx, 0);
+	fz_append_printf(ctx, console_buffer, "Welcome to MuPDF %s with MuJS %d.%d.%d",
+		FZ_VERSION,
+		JS_VERSION_MAJOR, JS_VERSION_MINOR, JS_VERSION_PATCH);
+
+	warning_callback = fz_warning_callback(ctx, &warning_user);
+	fz_set_warning_callback(ctx, console_warn, NULL);
+	error_callback = fz_error_callback(ctx, &error_user);
+	fz_set_error_callback(ctx, console_err, NULL);
+}
+
+static void console_fin(void)
+{
+	fz_set_warning_callback(ctx, warning_callback, warning_user);
+	fz_set_error_callback(ctx, error_callback, error_user);
+	fz_drop_buffer(ctx, console_buffer);
+	console_buffer = NULL;
+}
+
+static pdf_js_console gl_js_console = {
+	NULL,
+	gl_js_console_show,
+	gl_js_console_hide,
+	gl_js_console_clear,
+	gl_js_console_write,
+};
+
+static void toggle_console(void)
+{
+	showconsole = !showconsole;
+	if (showconsole)
+		ui.focus = &console_readline;
+	if (canvas_w == page_tex.w && canvas_h == page_tex.h)
+		shrinkwrap();
+}
+
+void do_console(void)
+{
+	pdf_js_console *console = pdf_js_get_console(ctx, pdf);
+	char *result = NULL;
+	const char *accepted = NULL;
+
+	fz_var(result);
+
+	ui_layout(B, BOTH, NW, 0, 0);
+	ui_panel_begin(canvas_w, console_h, ui.padsize, ui.padsize, 1);
+
+	ui_layout(B, X, NW, 0, 0);
+
+	accepted = ui_readline(&console_readline, 0);
+	if (accepted != NULL)
+	{
+		ui.focus = &console_readline;
+		if (console_readline.input.text[0])
+		{
+			fz_try(ctx)
+			{
+				if (console && console->write)
+				{
+					console->write(ctx, "\n> ");
+					console->write(ctx, console_readline.input.text);
+				}
+				pdf_js_execute(pdf ? pdf->js : NULL, "console", console_readline.input.text, &result);
+				if (result && console && console->write)
+				{
+					console->write(ctx, "\n");
+					console->write(ctx, result);
+				}
+			}
+			fz_always(ctx)
+				fz_free(ctx, result);
+			fz_catch(ctx)
+			{
+				if (console)
+				{
+					console->write(ctx, "\nError: ");
+					console->write(ctx, fz_caught_message(ctx));
+				}
+			}
+			fz_flush_warnings(ctx);
+			ui_input_init(&console_readline.input, "");
+		}
+	}
+
+	ui_layout(ALL, BOTH, NW, ui.padsize, ui.padsize);
+
+	// White background!
+	glColorHex(0xF5F5F5);
+	glRectf(ui.cavity->x0, ui.cavity->y0, ui.cavity->x1, ui.cavity->y1);
+
+	char *console_string = (char *) fz_string_from_buffer(ctx, console_buffer);
+	ui_label_with_scrollbar(console_string, 0, 10, &console_scroll, &console_sticky);
+
+	ui_panel_end();
+}
+
 static void do_app(void)
 {
 	if (ui.mod == GLUT_ACTIVE_ALT)
@@ -1994,9 +2341,11 @@ static void do_app(void)
 		case 'R': toggle_annotate(ANNOTATE_MODE_REDACT); break;
 		case 'o': toggle_outline(); break;
 		case 'u': toggle_undo(); break;
+		case 'Y': toggle_layers(); break;
 		case 'L': showlinks = !showlinks; break;
 		case 'F': showform = !showform; break;
 		case 'i': ui.dialog = info_dialog; break;
+		case '`': case KEY_F12: toggle_console(); break;
 		case 'r': reload(); break;
 		case 'q': quit(); break;
 		case 'S': do_save_pdf_file(); break;
@@ -2044,6 +2393,12 @@ static void do_app(void)
 				currentaa = (currentaa == 8 ? 0 : 8);
 			else
 				currentaa = number;
+			break;
+
+		case 'B':
+			currentbox += 1;
+			if (currentbox >= FZ_UNKNOWN_BOX)
+				currentbox = FZ_MEDIA_BOX;
 			break;
 
 		case 'm':
@@ -2284,6 +2639,14 @@ static fz_buffer *format_info_text()
 			fz_strlcat(buf, "edit, ", sizeof buf);
 		if (fz_has_permission(ctx, doc, FZ_PERMISSION_ANNOTATE))
 			fz_strlcat(buf, "annotate, ", sizeof buf);
+		if (fz_has_permission(ctx, doc, FZ_PERMISSION_FORM))
+			fz_strlcat(buf, "form, ", sizeof buf);
+		if (fz_has_permission(ctx, doc, FZ_PERMISSION_ACCESSIBILITY))
+			fz_strlcat(buf, "accessibility, ", sizeof buf);
+		if (fz_has_permission(ctx, doc, FZ_PERMISSION_ASSEMBLE))
+			fz_strlcat(buf, "assemble, ", sizeof buf);
+		if (fz_has_permission(ctx, doc, FZ_PERMISSION_PRINT_HQ))
+			fz_strlcat(buf, "print-hq, ", sizeof buf);
 		if (strlen(buf) > 2)
 			buf[strlen(buf)-2] = 0;
 		else
@@ -2349,6 +2712,7 @@ static fz_buffer *format_info_text()
 	}
 
 	fz_append_printf(ctx, out, "Page: %d / %d\n", fz_page_number_from_location(ctx, doc, currentpage)+1, fz_count_pages(ctx, doc));
+	fz_append_printf(ctx, out, "Page Label: %s\n", fz_page_label(ctx, fzpage, buf, sizeof buf));
 	{
 		int w = (int)(page_bounds.x1 - page_bounds.x0 + 0.5f);
 		int h = (int)(page_bounds.y1 - page_bounds.y0 + 0.5f);
@@ -2356,9 +2720,9 @@ static fz_buffer *format_info_text()
 		if (!size)
 			size = paper_size_name(h, w);
 		if (size)
-			fz_append_printf(ctx, out, "Size: %d x %d (%s)\n", w, h, size);
+			fz_append_printf(ctx, out, "Size: %d x %d (%s - %s)\n", w, h, fz_string_from_box_type(currentbox), size);
 		else
-			fz_append_printf(ctx, out, "Size: %d x %d\n", w, h);
+			fz_append_printf(ctx, out, "Size: %d x %d (%s)\n", w, h, fz_string_from_box_type(currentbox));
 	}
 	fz_append_printf(ctx, out, "ICC rendering: %s.\n", currenticc ? "on" : "off");
 	fz_append_printf(ctx, out, "Spot rendering: %s.\n", currentseparations ? "on" : "off");
@@ -2575,8 +2939,10 @@ void do_main(void)
 		do_outline(outline);
 	else if (showundo)
 		do_undo();
-	if (showoutline || showundo)
-		ui_splitter(&outline_w, 6*ui.gridsize, 20*ui.gridsize, R);
+	else if (showlayers)
+		do_layers();
+	if (showoutline || showundo || showlayers)
+		ui_splitter(&outline_start_x, &outline_w, 6*ui.gridsize, 20*ui.gridsize, R);
 
 	if (!eqloc(oldpage, currentpage) || oldseparations != currentseparations || oldicc != currenticc)
 	{
@@ -2593,6 +2959,12 @@ void do_main(void)
 		else
 			do_redact_panel();
 		ui_panel_end();
+	}
+
+	if (showconsole)
+	{
+		do_console();
+		ui_splitter(&console_start_y, &console_h, 6*ui.lineheight, 25*ui.lineheight, T);
 	}
 
 	do_canvas();
@@ -2629,6 +3001,8 @@ static void usage(const char *argv0)
 	fprintf(stderr, "usage: %s [options] document [page]\n", argv0);
 	fprintf(stderr, "\t-p -\tpassword\n");
 	fprintf(stderr, "\t-r -\tresolution\n");
+	fprintf(stderr, "\t-c -\tdisplay ICC profile\n");
+	fprintf(stderr, "\t-b -\tuse named page box (MediaBox, CropBox, BleedBox, TrimBox, or ArtBox)\n");
 	fprintf(stderr, "\t-I\tinvert colors\n");
 	fprintf(stderr, "\t-W -\tpage width for EPUB layout\n");
 	fprintf(stderr, "\t-H -\tpage height for EPUB layout\n");
@@ -2675,7 +3049,10 @@ static void do_open_document_dialog(void)
 static void cleanup(void)
 {
 	save_history();
-	save_accelerator();
+	fz_try(ctx)
+		save_accelerator();
+	fz_catch(ctx)
+		fz_warn(ctx, "cannot save accelerator file");
 
 	ui_finish();
 
@@ -2687,6 +3064,11 @@ static void cleanup(void)
 #endif
 
 	trace_action("quit(0);\n");
+
+	fz_flush_warnings(ctx);
+
+	console_fin();
+
 	fz_drop_output(ctx, trace_file);
 	fz_drop_stext_page(ctx, page_text);
 	fz_drop_separations(ctx, seps);
@@ -2714,6 +3096,7 @@ int main(int argc, char **argv)
 #endif
 {
 	const char *trace_file_name = NULL;
+	const char *profile_name = NULL;
 	float scale = 0;
 	int c;
 
@@ -2731,14 +3114,16 @@ int main(int argc, char **argv)
 
 	glutInit(&argc, argv);
 
-	while ((c = fz_getopt(argc, argv, "p:r:IW:H:S:U:XJA:B:C:T:Y:R:")) != -1)
+	while ((c = fz_getopt(argc, argv, "p:r:IW:H:S:U:XJb:A:B:C:T:Y:R:c:")) != -1)
 	{
 		switch (c)
 		{
 		default: usage(argv[0]); break;
 		case 'p': password = fz_optarg; break;
 		case 'r': currentzoom = fz_atof(fz_optarg); break;
+		case 'c': profile_name = fz_optarg; break;
 		case 'I': currentinvert = !currentinvert; break;
+		case 'b': currentbox = fz_box_type_from_string(fz_optarg); break;
 		case 'W': layout_w = fz_atof(fz_optarg); break;
 		case 'H': layout_h = fz_atof(fz_optarg); break;
 		case 'S': layout_em = fz_atof(fz_optarg); break;
@@ -2769,6 +3154,8 @@ int main(int argc, char **argv)
 	fz_set_stddbg(ctx, fz_stdods(ctx));
 #endif
 
+	console_init();
+
 	fz_register_document_handlers(ctx);
 
 	if (trace_file_name)
@@ -2783,6 +3170,17 @@ int main(int argc, char **argv)
 		trace_action("	err.name = 'RegressionError';\n");
 		trace_action("	return err;\n");
 		trace_action("}\n");
+	}
+
+	if (profile_name)
+	{
+		fz_buffer *profile_data = fz_read_file(ctx, profile_name);
+		profile = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_RGB, 0, NULL, profile_data);
+		fz_drop_buffer(ctx, profile_data);
+	}
+	else
+	{
+		profile = fz_device_rgb(ctx);
 	}
 
 	if (layout_css)
@@ -2830,7 +3228,7 @@ int main(int argc, char **argv)
 				oldzoom = currentzoom;
 
 				/* compute bounds here for initial window size */
-				page_bounds = fz_bound_page(ctx, fzpage);
+				page_bounds = fz_bound_page_box(ctx, fzpage, currentbox);
 				transform_page();
 
 				area = fz_irect_from_rect(draw_page_bounds);
@@ -2869,6 +3267,7 @@ int main(int argc, char **argv)
 
 	annotate_w *= ui.lineheight;
 	outline_w *= ui.lineheight;
+	console_h *= ui.lineheight;
 
 	glutMainLoop();
 

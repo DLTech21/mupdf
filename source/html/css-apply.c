@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 #include "html-imp.h"
@@ -700,7 +700,6 @@ fz_add_css_font_face(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, co
 	fz_strlcat(path, "/", sizeof path);
 	fz_strlcat(path, src, sizeof path);
 	fz_urldecode(path);
-	fz_cleanname(path);
 
 	for (custom = set->custom; custom; custom = custom->next)
 		if (!strcmp(custom->src, path) && !strcmp(custom->family, family) &&
@@ -768,12 +767,14 @@ is_inheritable_property(int name)
 		name == PRO_FONT_STYLE ||
 		name == PRO_FONT_VARIANT ||
 		name == PRO_FONT_WEIGHT ||
+		name == PRO_LEADING ||
 		name == PRO_LETTER_SPACING ||
 		name == PRO_LINE_HEIGHT ||
 		name == PRO_LIST_STYLE_IMAGE ||
 		name == PRO_LIST_STYLE_POSITION ||
 		name == PRO_LIST_STYLE_TYPE ||
 		name == PRO_ORPHANS ||
+		name == PRO_OVERFLOW_WRAP ||
 		name == PRO_QUOTES ||
 		name == PRO_TEXT_ALIGN ||
 		name == PRO_TEXT_INDENT ||
@@ -781,7 +782,11 @@ is_inheritable_property(int name)
 		name == PRO_VISIBILITY ||
 		name == PRO_WHITE_SPACE ||
 		name == PRO_WIDOWS ||
-		name == PRO_WORD_SPACING;
+		name == PRO_WORD_SPACING ||
+		// Strictly speaking, text-decoration is not an inherited property,
+		// but since when drawing an underlined element, all children are also underlined,
+		// we may as well make it inherited.
+		name == PRO_TEXT_DECORATION;
 }
 
 static fz_css_value *
@@ -828,6 +833,15 @@ make_number(float v, int u)
 	fz_css_number n;
 	n.value = v;
 	n.unit = u;
+	return n;
+}
+
+static fz_css_number
+make_undefined_number(void)
+{
+	fz_css_number n;
+	n.value = 0;
+	n.unit = N_UNDEFINED;
 	return n;
 }
 
@@ -961,6 +975,11 @@ border_style_from_property(fz_css_match *match, int property)
 		else if (!strcmp(value->data, "solid")) return BS_SOLID;
 	}
 	return BS_NONE;
+}
+
+int fz_css_number_defined(fz_css_number number)
+{
+	return number.unit != N_UNDEFINED;
 }
 
 float
@@ -1154,6 +1173,16 @@ fz_get_css_match_display(fz_css_match *match)
 			return DIS_TABLE_ROW;
 		if (!strcmp(value->data, "table-cell"))
 			return DIS_TABLE_CELL;
+		if (!strcmp(value->data, "table-row-group"))
+			return DIS_TABLE_GROUP;
+		if (!strcmp(value->data, "table-header-group"))
+			return DIS_TABLE_GROUP;
+		if (!strcmp(value->data, "table-footer-group"))
+			return DIS_TABLE_GROUP;
+		if (!strcmp(value->data, "table-column-group"))
+			return DIS_NONE;
+		if (!strcmp(value->data, "table-column"))
+			return DIS_NONE;
 	}
 	return DIS_INLINE;
 }
@@ -1171,6 +1200,18 @@ white_space_from_property(fz_css_match *match)
 		else if (!strcmp(value->data, "pre-line")) return WS_PRE_LINE;
 	}
 	return WS_NORMAL;
+}
+
+static int
+text_decoration_from_property(fz_css_match *match)
+{
+	fz_css_value *value = value_from_property(match, PRO_TEXT_DECORATION);
+	if (value)
+	{
+		if (!strcmp(value->data, "underline")) return TD_UNDERLINE;
+		if (!strcmp(value->data, "line-through")) return TD_LINE_THROUGH;
+	}
+	return TD_NONE;
 }
 
 static int
@@ -1213,6 +1254,7 @@ fz_default_css_style(fz_context *ctx, fz_css_style *style)
 	style->font_size = make_number(1, N_SCALE);
 	style->width = make_number(0, N_AUTO);
 	style->height = make_number(0, N_AUTO);
+	style->leading = make_undefined_number();
 }
 
 void
@@ -1227,6 +1269,7 @@ fz_apply_css_style(fz_context *ctx, fz_html_font_set *set, fz_css_style *style, 
 
 	style->visibility = visibility_from_property(match);
 	style->white_space = white_space_from_property(match);
+	style->text_decoration = text_decoration_from_property(match);
 	style->page_break_before = page_break_from_property(match, PRO_PAGE_BREAK_BEFORE);
 	style->page_break_after = page_break_from_property(match, PRO_PAGE_BREAK_AFTER);
 
@@ -1291,7 +1334,15 @@ fz_apply_css_style(fz_context *ctx, fz_html_font_set *set, fz_css_style *style, 
 		else if (!strcmp(value->data, "georgian")) style->list_style_type = LST_GEORGIAN;
 	}
 
+	value = value_from_property(match, PRO_OVERFLOW_WRAP);
+	if (value)
+	{
+		if (!strcmp(value->data, "break-word")) style->overflow_wrap = OVERFLOW_WRAP_BREAK_WORD;
+		else style->overflow_wrap = OVERFLOW_WRAP_NORMAL;
+	}
+
 	style->line_height = number_from_property(match, PRO_LINE_HEIGHT, 1.2f, N_SCALE);
+	style->leading = number_from_property(match, PRO_LEADING, 0, N_UNDEFINED);
 
 	style->text_indent = number_from_property(match, PRO_TEXT_INDENT, 0, N_LENGTH);
 
@@ -1310,6 +1361,8 @@ fz_apply_css_style(fz_context *ctx, fz_html_font_set *set, fz_css_style *style, 
 
 	style->color = color_from_property(match, PRO_COLOR, black);
 	style->background_color = color_from_property(match, PRO_BACKGROUND_COLOR, transparent);
+
+	style->border_spacing = number_from_property(match, PRO_BORDER_SPACING, 0, N_LENGTH);
 
 	style->border_style_0 = border_style_from_property(match, PRO_BORDER_TOP_STYLE);
 	style->border_style_1 = border_style_from_property(match, PRO_BORDER_RIGHT_STYLE);

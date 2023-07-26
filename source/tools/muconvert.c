@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /*
  * muconvert -- command line tool for converting documents
@@ -51,7 +51,6 @@ static int count;
 static int usage(void)
 {
 	fprintf(stderr,
-		"mutool convert version " FZ_VERSION "\n"
 		"Usage: mutool convert [options] file [pages]\n"
 		"\t-p -\tpassword\n"
 		"\n"
@@ -219,7 +218,10 @@ int muconvert_main(int argc, char **argv)
 		fz_drop_document_writer(ctx, out);
 	}
 	fz_catch(ctx)
+	{
+		fz_log_error(ctx, fz_caught_message(ctx));
 		retval = EXIT_FAILURE;
+	}
 
 	fz_drop_context(ctx);
 	return retval;

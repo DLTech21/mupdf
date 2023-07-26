@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "gl-app.h"
 
@@ -561,10 +561,12 @@ static void tx_dialog(void)
 			ui_spacer();
 			if (ui_button("Okay") || is == UI_INPUT_ACCEPT)
 			{
-				trace_action("widget.setTextValue(%q);\n", tx_input.text);
-				pdf_set_text_field_value(ctx, tx_widget, tx_input.text);
-				trace_field_value(tx_widget, tx_input.text);
-				ui.dialog = NULL;
+				if (pdf_set_text_field_value(ctx, tx_widget, tx_input.text))
+				{
+					trace_action("widget.setTextValue(%q);\n", tx_input.text);
+					trace_field_value(tx_widget, tx_input.text);
+					ui.dialog = NULL;
+				}
 			}
 		}
 		ui_panel_end();

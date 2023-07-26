@@ -36,6 +36,9 @@
     <None Include="..\java\src\com\artifex\mupdf\fitz\Cookie.java">
       <Filter>com/artifex/mupdf/fitz</Filter>
     </None>
+    <None Include="..\java\src\com\artifex\mupdf\fitz\DefaultColorSpaces.java">
+      <Filter>com/artifex/mupdf/fitz</Filter>
+    </None>
     <None Include="..\java\src\com\artifex\mupdf\fitz\Device.java">
       <Filter>com/artifex/mupdf/fitz</Filter>
     </None>
@@ -174,9 +177,18 @@
     <None Include="..\java\src\com\artifex\mupdf\fitz\SeekableStream.java">
       <Filter>com/artifex/mupdf/fitz</Filter>
     </None>
+    <None Include="..\java\src\com\artifex\mupdf\fitz\Story.java">
+      <Filter>com/artifex/mupdf/fitz</Filter>
+    </None>
+    <None Include="..\java\src\com\artifex\mupdf\fitz\XML.java">
+      <Filter>com/artifex/mupdf/fitz</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\java\mupdf_native.c" />
+    <ClCompile Include="..\java\jni\archive.c">
+      <Filter>jni</Filter>
+    </ClCompile>
     <ClCompile Include="..\java\jni\buffer.c">
       <Filter>jni</Filter>
     </ClCompile>
@@ -187,6 +199,9 @@
       <Filter>jni</Filter>
     </ClCompile>
     <ClCompile Include="..\java\jni\cookie.c">
+      <Filter>jni</Filter>
+    </ClCompile>
+    <ClCompile Include="..\java\jni\defaultcolorspaces.c">
       <Filter>jni</Filter>
     </ClCompile>
     <ClCompile Include="..\java\jni\device.c">
@@ -217,6 +232,12 @@
       <Filter>jni</Filter>
     </ClCompile>
     <ClCompile Include="..\java\jni\nativedevice.c">
+      <Filter>jni</Filter>
+    </ClCompile>
+    <ClCompile Include="..\java\jni\link.c">
+      <Filter>jni</Filter>
+    </ClCompile>
+    <ClCompile Include="..\java\jni\multiarchive.c">
       <Filter>jni</Filter>
     </ClCompile>
     <ClCompile Include="..\java\jni\outlineiterator.c">
@@ -270,6 +291,9 @@
     <ClCompile Include="..\java\jni\text.c">
       <Filter>jni</Filter>
     </ClCompile>
+    <ClCompile Include="..\java\jni\treearchive.c">
+      <Filter>jni</Filter>
+    </ClCompile>
     <ClCompile Include="..\java\jni\wrap.c">
       <Filter>jni</Filter>
     </ClCompile>
@@ -281,6 +305,15 @@
     </ClCompile>
     <ClCompile Include="..\java\jni\android\androidimage.c">
       <Filter>jni\android</Filter>
+    </ClCompile>
+    <ClCompile Include="..\java\jni\story.c">
+      <Filter>jni</Filter>
+    </ClCompile>
+    <ClCompile Include="..\java\jni\xml.c">
+      <Filter>jni</Filter>
+    </ClCompile>
+    <ClCompile Include="..\java\jni\dom.c">
+      <Filter>jni</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

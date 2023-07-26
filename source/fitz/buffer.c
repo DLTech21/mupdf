@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 
@@ -98,35 +98,96 @@ fz_new_buffer_from_copied_data(fz_context *ctx, const unsigned char *data, size_
 	return b;
 }
 
+fz_buffer *fz_clone_buffer(fz_context *ctx, fz_buffer *buf)
+{
+	return fz_new_buffer_from_copied_data(ctx, buf ? buf->data : NULL, buf ? buf->len : 0);
+}
+
+static inline int iswhite(int a)
+{
+	switch (a) {
+	case '\n': case '\r': case '\t': case ' ':
+	case '\f':
+		return 1;
+	}
+	return 0;
+}
+
 fz_buffer *
 fz_new_buffer_from_base64(fz_context *ctx, const char *data, size_t size)
 {
-	fz_buffer *buf = fz_new_buffer(ctx, size);
+	fz_buffer *out = fz_new_buffer(ctx, size > 0 ? size : strlen(data));
 	const char *end = data + (size > 0 ? size : strlen(data));
 	const char *s = data;
+	uint32_t buf = 0;
+	int bits = 0;
+
+	/* This is https://infra.spec.whatwg.org/#forgiving-base64-decode
+	 * but even more relaxed. We allow any number of trailing '=' code
+	 * points and instead of returning failure on invalid characters, we
+	 * warn and truncate.
+	 */
+
+	while (s < end && iswhite(*s))
+		s++;
+	while (s < end && iswhite(end[-1]))
+		end--;
+	while (s < end && end[-1] == '=')
+		end--;
+
 	fz_try(ctx)
 	{
 		while (s < end)
 		{
 			int c = *s++;
+
 			if (c >= 'A' && c <= 'Z')
-				fz_append_bits(ctx, buf, c - 'A', 6);
+				c = c - 'A';
 			else if (c >= 'a' && c <= 'z')
-				fz_append_bits(ctx, buf, c - 'a' + 26, 6);
+				c = c - 'a' + 26;
 			else if (c >= '0' && c <= '9')
-				fz_append_bits(ctx, buf, c - '0' + 52, 6);
+				c = c - '0' + 52;
 			else if (c == '+')
-				fz_append_bits(ctx, buf, 62, 6);
+				c = 62;
 			else if (c == '/')
-				fz_append_bits(ctx, buf, 63, 6);
+				c = 63;
+			else if (iswhite(c))
+				continue;
+			else
+			{
+				fz_warn(ctx, "invalid character in base64");
+				break;
+			}
+
+			buf <<= 6;
+			buf |= c & 0x3f;
+			bits += 6;
+
+			if (bits == 24)
+			{
+				fz_append_byte(ctx, out, buf >> 16);
+				fz_append_byte(ctx, out, buf >> 8);
+				fz_append_byte(ctx, out, buf >> 0);
+				bits = 0;
+			}
+		}
+
+		if (bits == 18)
+		{
+			fz_append_byte(ctx, out, buf >> 10);
+			fz_append_byte(ctx, out, buf >> 2);
+		}
+		else if (bits == 12)
+		{
+			fz_append_byte(ctx, out, buf >> 4);
 		}
 	}
 	fz_catch(ctx)
 	{
-		fz_drop_buffer(ctx, buf);
+		fz_drop_buffer(ctx, out);
 		fz_rethrow(ctx);
 	}
-	return buf;
+	return out;
 }
 
 fz_buffer *
@@ -230,6 +291,27 @@ fz_buffer_extract(fz_context *ctx, fz_buffer *buf, unsigned char **datap)
 		buf->len = 0;
 	}
 	return len;
+}
+
+fz_buffer *
+fz_slice_buffer(fz_context *ctx, fz_buffer *buf, int64_t start, int64_t end)
+{
+	unsigned char *src = NULL;
+	size_t size = fz_buffer_storage(ctx, buf, &src);
+	size_t s, e;
+
+	if (start < 0)
+		start += size;
+	if (end < 0)
+		end += size;
+
+	s = fz_clamp64(start, 0, size);
+	e = fz_clamp64(end, 0, size);
+
+	if (s == size || e <= s)
+		return fz_new_buffer(ctx, 0);
+
+	return fz_new_buffer_from_copied_data(ctx, &src[s], e - s);
 }
 
 void

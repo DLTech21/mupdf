@@ -17,12 +17,14 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 
 #include "z-imp.h"
+
+#include <limits.h>
 
 struct ahx
 {
@@ -329,40 +331,63 @@ struct deflate
 {
 	fz_output *chain;
 	z_stream z;
+	uInt bufsize;
+	unsigned char *buf;
 };
 
 static void deflate_write(fz_context *ctx, void *opaque, const void *data, size_t n)
 {
 	struct deflate *state = opaque;
-	unsigned char buffer[32 << 10];
+	const unsigned char *p = data;
+	uLong newbufsizeLong;
+	uInt newbufsize;
 	int err;
 
-	state->z.next_in = (Bytef*)data;
-	state->z.avail_in = (uInt)n;
-	do
+	newbufsizeLong = n >= UINT_MAX ? UINT_MAX : deflateBound(&state->z, (uLong)n);
+	newbufsize = (uInt)(newbufsizeLong >= UINT_MAX ? UINT_MAX : newbufsizeLong);
+
+	if (state->buf == NULL)
 	{
-		state->z.next_out = buffer;
-		state->z.avail_out = sizeof buffer;
-		err = deflate(&state->z, Z_NO_FLUSH);
-		if (err != Z_OK)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "zlib compression failed: %d", err);
-		if (state->z.avail_out > 0)
-			fz_write_data(ctx, state->chain, state->z.next_out, state->z.avail_out);
-	} while (state->z.avail_out > 0);
+		state->buf = Memento_label(fz_malloc(ctx, newbufsize), "deflate_buffer");
+		state->bufsize = newbufsize;
+	}
+	else if (newbufsize > state->bufsize)
+	{
+		state->buf = Memento_label(fz_realloc(ctx, state->buf, newbufsize), "deflate_buffer");
+		state->bufsize = newbufsize;
+	}
+
+	while (n > 0)
+	{
+		state->z.avail_in = n <= UINT_MAX ? (uInt)n : UINT_MAX;
+		state->z.next_in = (unsigned char *) p;
+		n -= state->z.avail_in;
+		p += state->z.avail_in;
+
+		do
+		{
+			state->z.next_out = state->buf;
+			state->z.avail_out = state->bufsize;
+			err = deflate(&state->z, Z_NO_FLUSH);
+			if (err != Z_OK)
+				fz_throw(ctx, FZ_ERROR_GENERIC, "zlib compression failed: %d", err);
+			if (state->z.avail_out > 0)
+				fz_write_data(ctx, state->chain, state->z.next_out, state->z.avail_out);
+		} while (state->z.avail_out > 0);
+	}
 }
 
 static void deflate_close(fz_context *ctx, void *opaque)
 {
 	struct deflate *state = opaque;
-	unsigned char buffer[32 << 10];
 	int err;
 
 	state->z.next_in = NULL;
 	state->z.avail_in = 0;
 	do
 	{
-		state->z.next_out = buffer;
-		state->z.avail_out = sizeof buffer;
+		state->z.next_out = state->buf;
+		state->z.avail_out = state->bufsize;
 		err = deflate(&state->z, Z_FINISH);
 		if (state->z.avail_out > 0)
 			fz_write_data(ctx, state->chain, state->z.next_out, state->z.avail_out);
@@ -376,6 +401,7 @@ static void deflate_drop(fz_context *ctx, void *opaque)
 {
 	struct deflate *state = opaque;
 	(void)deflateEnd(&state->z);
+	fz_free(ctx, state->buf);
 	fz_free(ctx, state);
 }
 

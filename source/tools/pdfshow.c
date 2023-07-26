@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /*
  * pdfshow -- the ultimate pdf debugging tool
@@ -73,7 +73,7 @@ static void showxref(void)
 	fz_write_printf(ctx, out, "xref\n0 %d\n", xref_len);
 	for (i = 0; i < xref_len; i++)
 	{
-		pdf_xref_entry *entry = pdf_get_xref_entry(ctx, doc, i);
+		pdf_xref_entry *entry = pdf_get_xref_entry_no_null(ctx, doc, i);
 		fz_write_printf(ctx, out, "%05d: %010d %05d %c \n",
 				i,
 				(int)entry->ofs,
@@ -197,7 +197,7 @@ static void showgrep(void)
 	len = pdf_count_objects(ctx, doc);
 	for (i = 0; i < len; i++)
 	{
-		pdf_xref_entry *entry = pdf_get_xref_entry(ctx, doc, i);
+		pdf_xref_entry *entry = pdf_get_xref_entry_no_null(ctx, doc, i);
 		if (entry->type == 'n' || entry->type == 'o')
 		{
 			fz_try(ctx)
@@ -332,7 +332,7 @@ static void showfield(pdf_obj *field)
 	int ff;
 	int i, n;
 
-	t = pdf_field_name(ctx, field);
+	t = pdf_load_field_name(ctx, field);
 	tu = pdf_dict_get_text_string(ctx, field, PDF_NAME(TU));
 	ft = pdf_dict_get_inheritable(ctx, field, PDF_NAME(FT));
 	ff = pdf_field_flags(ctx, field);
@@ -643,13 +643,17 @@ int pdfshow_main(int argc, char **argv)
 
 		fz_close_output(ctx, out);
 	}
+	fz_always(ctx)
+	{
+		fz_drop_output(ctx, out);
+		pdf_drop_document(ctx, doc);
+	}
 	fz_catch(ctx)
 	{
+		fz_log_error(ctx, fz_caught_message(ctx));
 		errored = 1;
 	}
 
-	fz_drop_output(ctx, out);
-	pdf_drop_document(ctx, doc);
 	fz_drop_context(ctx);
 	return errored;
 }

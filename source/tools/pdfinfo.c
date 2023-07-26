@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /*
  * Information tool.
@@ -238,7 +238,7 @@ gatherdimensions(fz_context *ctx, globals *glo, int page, pdf_obj *pageref)
 	bbox = pdf_to_rect(ctx, obj);
 
 	obj = pdf_dict_get(ctx, pageref, PDF_NAME(UserUnit));
-	if (pdf_is_real(ctx, obj))
+	if (pdf_is_number(ctx, obj))
 	{
 		float unit = pdf_to_real(ctx, obj);
 		bbox.x0 *= unit;
@@ -596,95 +596,80 @@ gatherpatterns(fz_context *ctx, globals *glo, int page, pdf_obj *pageref, pdf_ob
 }
 
 static void
-gatherresourceinfo(fz_context *ctx, globals *glo, int page, pdf_obj *rsrc, int show)
+gatherresourceinfo(fz_context *ctx, pdf_mark_list *mark_list, globals *glo, int page, pdf_obj *obj, int show)
 {
+	pdf_obj *rsrc;
 	pdf_obj *pageref;
 	pdf_obj *font;
 	pdf_obj *xobj;
 	pdf_obj *shade;
 	pdf_obj *pattern;
-	pdf_obj *subrsrc;
 	int i;
+
+	/* stop on cyclic resource dependencies */
+	if (pdf_mark_list_push(ctx, mark_list, obj))
+		return;
+
+	rsrc = pdf_dict_get(ctx, obj, PDF_NAME(Resources));
 
 	pageref = pdf_lookup_page_obj(ctx, glo->doc, page-1);
 	if (!pageref)
 		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot retrieve info from page %d", page);
 
-	/* stop on cyclic resource dependencies */
-	if (pdf_mark_obj(ctx, rsrc))
-		return;
-
-	fz_try(ctx)
+	font = pdf_dict_get(ctx, rsrc, PDF_NAME(Font));
+	if (show & FONTS && font && !pdf_mark_list_push(ctx, mark_list, font))
 	{
-		font = pdf_dict_get(ctx, rsrc, PDF_NAME(Font));
-		if (show & FONTS && font)
+		int n;
+
+		gatherfonts(ctx, glo, page, pageref, font);
+		n = pdf_dict_len(ctx, font);
+		for (i = 0; i < n; i++)
 		{
-			int n;
-
-			gatherfonts(ctx, glo, page, pageref, font);
-			n = pdf_dict_len(ctx, font);
-			for (i = 0; i < n; i++)
-			{
-				pdf_obj *obj = pdf_dict_get_val(ctx, font, i);
-
-				subrsrc = pdf_dict_get(ctx, obj, PDF_NAME(Resources));
-				if (subrsrc && pdf_objcmp(ctx, rsrc, subrsrc))
-					gatherresourceinfo(ctx, glo, page, subrsrc, show);
-			}
-		}
-
-		xobj = pdf_dict_get(ctx, rsrc, PDF_NAME(XObject));
-		if (show & (IMAGES|XOBJS) && xobj)
-		{
-			int n;
-
-			if (show & IMAGES)
-				gatherimages(ctx, glo, page, pageref, xobj);
-			if (show & XOBJS)
-			{
-				gatherforms(ctx, glo, page, pageref, xobj);
-				gatherpsobjs(ctx, glo, page, pageref, xobj);
-			}
-			n = pdf_dict_len(ctx, xobj);
-			for (i = 0; i < n; i++)
-			{
-				pdf_obj *obj = pdf_dict_get_val(ctx, xobj, i);
-				subrsrc = pdf_dict_get(ctx, obj, PDF_NAME(Resources));
-				if (subrsrc && pdf_objcmp(ctx, rsrc, subrsrc))
-					gatherresourceinfo(ctx, glo, page, subrsrc, show);
-			}
-		}
-
-		shade = pdf_dict_get(ctx, rsrc, PDF_NAME(Shading));
-		if (show & SHADINGS && shade)
-			gathershadings(ctx, glo, page, pageref, shade);
-
-		pattern = pdf_dict_get(ctx, rsrc, PDF_NAME(Pattern));
-		if (show & PATTERNS && pattern)
-		{
-			int n;
-			gatherpatterns(ctx, glo, page, pageref, pattern);
-			n = pdf_dict_len(ctx, pattern);
-			for (i = 0; i < n; i++)
-			{
-				pdf_obj *obj = pdf_dict_get_val(ctx, pattern, i);
-				subrsrc = pdf_dict_get(ctx, obj, PDF_NAME(Resources));
-				if (subrsrc && pdf_objcmp(ctx, rsrc, subrsrc))
-					gatherresourceinfo(ctx, glo, page, subrsrc, show);
-			}
+			gatherresourceinfo(ctx, mark_list, glo, page, pdf_dict_get_val(ctx, font, i), show);
 		}
 	}
-	fz_always(ctx)
-		pdf_unmark_obj(ctx, rsrc);
-	fz_catch(ctx)
-		fz_rethrow(ctx);
+
+	xobj = pdf_dict_get(ctx, rsrc, PDF_NAME(XObject));
+	if (show & (IMAGES|XOBJS) && xobj && !pdf_mark_list_push(ctx, mark_list, xobj))
+	{
+		int n;
+
+		if (show & IMAGES)
+			gatherimages(ctx, glo, page, pageref, xobj);
+		if (show & XOBJS)
+		{
+			gatherforms(ctx, glo, page, pageref, xobj);
+			gatherpsobjs(ctx, glo, page, pageref, xobj);
+		}
+		n = pdf_dict_len(ctx, xobj);
+		for (i = 0; i < n; i++)
+		{
+			gatherresourceinfo(ctx, mark_list, glo, page, pdf_dict_get_val(ctx, xobj, i), show);
+		}
+	}
+
+	shade = pdf_dict_get(ctx, rsrc, PDF_NAME(Shading));
+	if (show & SHADINGS && shade && !pdf_mark_list_push(ctx, mark_list, shade))
+		gathershadings(ctx, glo, page, pageref, shade);
+
+	pattern = pdf_dict_get(ctx, rsrc, PDF_NAME(Pattern));
+	if (show & PATTERNS && pattern && !pdf_mark_list_push(ctx, mark_list, pattern))
+	{
+		int n;
+		gatherpatterns(ctx, glo, page, pageref, pattern);
+		n = pdf_dict_len(ctx, pattern);
+		for (i = 0; i < n; i++)
+		{
+			gatherresourceinfo(ctx, mark_list, glo, page, pdf_dict_get_val(ctx, pattern, i), show);
+		}
+	}
 }
 
 static void
 gatherpageinfo(fz_context *ctx, globals *glo, int page, int show)
 {
+	pdf_mark_list mark_list;
 	pdf_obj *pageref;
-	pdf_obj *rsrc;
 
 	pageref = pdf_lookup_page_obj(ctx, glo->doc, page-1);
 
@@ -693,8 +678,13 @@ gatherpageinfo(fz_context *ctx, globals *glo, int page, int show)
 
 	gatherdimensions(ctx, glo, page, pageref);
 
-	rsrc = pdf_dict_get(ctx, pageref, PDF_NAME(Resources));
-	gatherresourceinfo(ctx, glo, page, rsrc, show);
+	pdf_mark_list_init(ctx, &mark_list);
+	fz_try(ctx)
+		gatherresourceinfo(ctx, &mark_list, glo, page, pageref, show);
+	fz_always(ctx)
+		pdf_mark_list_free(ctx, &mark_list);
+	fz_catch(ctx)
+		fz_rethrow(ctx);
 }
 
 static void
@@ -1069,7 +1059,10 @@ int pdfinfo_main(int argc, char **argv)
 	fz_try(ctx)
 		pdfinfo_info(ctx, fz_stdout(ctx), filename, password, show, &argv[fz_optind], argc-fz_optind);
 	fz_catch(ctx)
+	{
+		fz_log_error(ctx, fz_caught_message(ctx));
 		ret = 1;
+	}
 	fz_drop_context(ctx);
 	return ret;
 }

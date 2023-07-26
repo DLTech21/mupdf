@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 
@@ -58,11 +58,24 @@ fz_trace_color(fz_context *ctx, fz_output *out, fz_colorspace *colorspace, const
 }
 
 static void
+fz_trace_color_params(fz_context *ctx, fz_output *out, fz_color_params color_params)
+{
+	fz_write_printf(ctx, out, " ri=\"%d\" bp=\"%d\" op=\"%d\" opm=\"%d\"",
+		color_params.ri, color_params.bp, color_params.op, color_params.opm);
+}
+
+static void
 fz_trace_text_span(fz_context *ctx, fz_output *out, fz_text_span *span, int depth)
 {
 	int i;
 	fz_trace_indent(ctx, out, depth);
 	fz_write_printf(ctx, out, "<span font=\"%s\" wmode=\"%d\" bidi=\"%d\"", fz_font_name(ctx, span->font), span->wmode, span->bidi_level);
+	if (span->language != FZ_LANG_UNSET)
+	{
+		char text[8];
+		fz_string_from_text_language(text, span->language);
+		fz_write_printf(ctx, out, " lang=\"%s\"", text);
+	}
 	fz_write_printf(ctx, out, " trm=\"%g %g %g %g\">\n", span->trm.a, span->trm.b, span->trm.c, span->trm.d);
 	for (i = 0; i < span->len; i++)
 	{
@@ -179,6 +192,7 @@ fz_trace_fill_path(fz_context *ctx, fz_device *dev_, const fz_path *path, int ev
 	else
 		fz_write_printf(ctx, out, " winding=\"nonzero\"");
 	fz_trace_color(ctx, out, colorspace, color, alpha);
+	fz_trace_color_params(ctx, out, color_params);
 	fz_trace_matrix(ctx, out, ctm);
 	fz_write_printf(ctx, out, ">\n");
 	fz_trace_path(ctx, dev, path);
@@ -210,6 +224,7 @@ fz_trace_stroke_path(fz_context *ctx, fz_device *dev_, const fz_path *path, cons
 	}
 
 	fz_trace_color(ctx, out, colorspace, color, alpha);
+	fz_trace_color_params(ctx, out, color_params);
 	fz_trace_matrix(ctx, out, ctm);
 	fz_write_printf(ctx, out, ">\n");
 
@@ -262,6 +277,7 @@ fz_trace_fill_text(fz_context *ctx, fz_device *dev_, const fz_text *text, fz_mat
 	fz_trace_indent(ctx, out, dev->depth);
 	fz_write_printf(ctx, out, "<fill_text");
 	fz_trace_color(ctx, out, colorspace, color, alpha);
+	fz_trace_color_params(ctx, out, color_params);
 	fz_trace_matrix(ctx, out, ctm);
 	fz_write_printf(ctx, out, ">\n");
 	fz_trace_text(ctx, out, text, dev->depth+1);
@@ -278,6 +294,7 @@ fz_trace_stroke_text(fz_context *ctx, fz_device *dev_, const fz_text *text, cons
 	fz_trace_indent(ctx, out, dev->depth);
 	fz_write_printf(ctx, out, "<stroke_text");
 	fz_trace_color(ctx, out, colorspace, color, alpha);
+	fz_trace_color_params(ctx, out, color_params);
 	fz_trace_matrix(ctx, out, ctm);
 	fz_write_printf(ctx, out, ">\n");
 	fz_trace_text(ctx, out, text, dev->depth+1);
@@ -338,6 +355,7 @@ fz_trace_fill_image(fz_context *ctx, fz_device *dev_, fz_image *image, fz_matrix
 	fz_write_printf(ctx, out, "<fill_image alpha=\"%g\"", alpha);
 	if (image->colorspace)
 		fz_write_printf(ctx, out, " colorspace=\"%s\"", fz_colorspace_name(ctx, image->colorspace));
+	fz_trace_color_params(ctx, out, color_params);
 	fz_trace_matrix(ctx, out, ctm);
 	fz_write_printf(ctx, out, " width=\"%d\" height=\"%d\"", image->w, image->h);
 	fz_write_printf(ctx, out, "/>\n");
@@ -359,6 +377,7 @@ fz_trace_fill_shade(fz_context *ctx, fz_device *dev_, fz_shade *shade, fz_matrix
 		shade->matrix.e,
 		shade->matrix.f);
 	fz_write_printf(ctx, out, " colorspace=\"%s\"", fz_colorspace_name(ctx, shade->colorspace));
+	fz_trace_color_params(ctx, out, color_params);
 	// TODO: use_background and background
 	// TODO: use_function and function
 	switch (shade->type)
@@ -426,6 +445,7 @@ fz_trace_fill_image_mask(fz_context *ctx, fz_device *dev_, fz_image *image, fz_m
 	fz_write_printf(ctx, out, "<fill_image_mask");
 	fz_trace_matrix(ctx, out, ctm);
 	fz_trace_color(ctx, out, colorspace, color, alpha);
+	fz_trace_color_params(ctx, out, color_params);
 	fz_write_printf(ctx, out, " width=\"%d\" height=\"%d\"", image->w, image->h);
 	fz_write_printf(ctx, out, "/>\n");
 }
@@ -462,6 +482,7 @@ fz_trace_begin_mask(fz_context *ctx, fz_device *dev_, fz_rect bbox, int luminosi
 	fz_write_printf(ctx, out, "<clip_mask bbox=\"%g %g %g %g\" s=\"%s\"",
 		bbox.x0, bbox.y0, bbox.x1, bbox.y1,
 		luminosity ? "luminosity" : "alpha");
+	fz_trace_color_params(ctx, out, color_params);
 	fz_write_printf(ctx, out, ">\n");
 	dev->depth++;
 }
@@ -531,7 +552,8 @@ fz_trace_begin_layer(fz_context *ctx, fz_device *dev_, const char *name)
 	fz_trace_device *dev = (fz_trace_device*)dev_;
 	fz_output *out = dev->out;
 	fz_trace_indent(ctx, out, dev->depth);
-	fz_write_printf(ctx, out, "<layer name=\"%s\"/>\n", name);
+	fz_write_printf(ctx, out, "<layer name=\"%s\">\n", name);
+	dev->depth++;
 }
 
 static void
@@ -539,8 +561,73 @@ fz_trace_end_layer(fz_context *ctx, fz_device *dev_)
 {
 	fz_trace_device *dev = (fz_trace_device*)dev_;
 	fz_output *out = dev->out;
+	dev->depth--;
 	fz_trace_indent(ctx, out, dev->depth);
-	fz_write_printf(ctx, out, "<end_layer/>\n");
+	fz_write_printf(ctx, out, "</layer>\n");
+}
+
+static void
+fz_trace_begin_structure(fz_context *ctx, fz_device *dev_, fz_structure standard, const char *raw, int uid)
+{
+	fz_trace_device *dev = (fz_trace_device*)dev_;
+	fz_output *out = dev->out;
+	const char *str = fz_structure_to_string(standard);
+	fz_trace_indent(ctx, out, dev->depth);
+	fz_write_printf(ctx, out, "<structure standard=\"%s\"", str);
+	if (raw && strcmp(str, raw))
+		fz_write_printf(ctx, out, " raw=\"%s\"", raw);
+	if (uid != 0)
+		fz_write_printf(ctx, out, " uid=\"%d\"", uid);
+	fz_write_printf(ctx, out, ">\n");
+	dev->depth++;
+}
+
+static void
+fz_trace_end_structure(fz_context *ctx, fz_device *dev_)
+{
+	fz_trace_device *dev = (fz_trace_device*)dev_;
+	fz_output *out = dev->out;
+	dev->depth--;
+	fz_trace_indent(ctx, out, dev->depth);
+	fz_write_printf(ctx, out, "</structure>\n");
+}
+
+static const char *
+metatext_type(fz_metatext meta)
+{
+	switch (meta)
+	{
+	case FZ_METATEXT_ABBREVIATION:
+		return "abbreviation";
+	case FZ_METATEXT_ACTUALTEXT:
+		return "actualtext";
+	case FZ_METATEXT_ALT:
+		return "alt";
+	case FZ_METATEXT_TITLE:
+		return "title";
+	}
+	return "????";
+}
+
+static void
+fz_trace_begin_metatext(fz_context *ctx, fz_device *dev_, fz_metatext meta, const char *txt)
+{
+	fz_trace_device *dev = (fz_trace_device*)dev_;
+	fz_output *out = dev->out;
+	const char *type = metatext_type(meta);
+	fz_trace_indent(ctx, out, dev->depth);
+	fz_write_printf(ctx, out, "<metatext type=\"%s\" txt=\"%s\">\n", type, txt ? txt : "");
+	dev->depth++;
+}
+
+static void
+fz_trace_end_metatext(fz_context *ctx, fz_device *dev_)
+{
+	fz_trace_device *dev = (fz_trace_device*)dev_;
+	fz_output *out = dev->out;
+	dev->depth--;
+	fz_trace_indent(ctx, out, dev->depth);
+	fz_write_printf(ctx, out, "</metatext>\n");
 }
 
 static void
@@ -597,6 +684,12 @@ fz_device *fz_new_trace_device(fz_context *ctx, fz_output *out)
 
 	dev->super.begin_layer = fz_trace_begin_layer;
 	dev->super.end_layer = fz_trace_end_layer;
+
+	dev->super.begin_structure = fz_trace_begin_structure;
+	dev->super.end_structure = fz_trace_end_structure;
+
+	dev->super.begin_metatext = fz_trace_begin_metatext;
+	dev->super.end_metatext = fz_trace_end_metatext;
 
 	dev->super.render_flags = fz_trace_render_flags;
 	dev->super.set_default_colorspaces = fz_trace_set_default_colorspaces;

@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /* Conversion functions: C to Java. These all throw fitz exceptions. */
 
@@ -36,6 +36,22 @@ static inline jobject to_ColorSpace(fz_context *ctx, JNIEnv *env, fz_colorspace 
 		fz_throw_java(ctx, env);
 
 	return jcs;
+}
+
+static inline jobject to_DefaultColorSpaces(fz_context *ctx, JNIEnv *env, fz_default_colorspaces *dcs)
+{
+	jobject jdcs;
+
+	if (!ctx || !dcs) return NULL;
+
+	fz_keep_default_colorspaces(ctx, dcs);
+	jdcs = (*env)->CallStaticObjectMethod(env, cls_DefaultColorSpaces, mid_DefaultColorSpaces_init, jlong_cast(dcs));
+	if (!jdcs)
+		fz_drop_default_colorspaces(ctx, dcs);
+	if ((*env)->ExceptionCheck(env))
+		fz_throw_java(ctx, env);
+
+	return jdcs;
 }
 
 static inline jobject to_FitzInputStream(fz_context *ctx, JNIEnv *env, fz_stream *stm)
@@ -198,7 +214,40 @@ static inline jfloatArray to_floatArray(fz_context *ctx, JNIEnv *env, const floa
 	return jarr;
 }
 
+static inline jintArray to_intArray(fz_context *ctx, JNIEnv *env, const int *arr, jint n)
+{
+	jintArray jarr;
+
+	if (!ctx) return NULL;
+
+	jarr = (*env)->NewIntArray(env, n);
+	if ((*env)->ExceptionCheck(env))
+		fz_throw_java(ctx, env);
+	if (!jarr)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot allocate int array");
+
+	(*env)->SetIntArrayRegion(env, jarr, 0, n, (jint *) arr);
+	if ((*env)->ExceptionCheck(env))
+		fz_throw_java(ctx, env);
+
+	return jarr;
+}
+
 /* Conversion functions: C to Java. None of these throw fitz exceptions. */
+
+static inline jobject to_Buffer_safe(fz_context *ctx, JNIEnv *env, fz_buffer *buf)
+{
+	jobject jbuf;
+
+	if (!ctx || !buf) return NULL;
+
+	fz_keep_buffer(ctx, buf);
+	jbuf = (*env)->NewObject(env, cls_Buffer, mid_Buffer_init, jlong_cast(buf));
+	if (!jbuf)
+		fz_drop_buffer(ctx, buf);
+
+	return jbuf;
+}
 
 static inline jint to_ColorParams_safe(fz_context *ctx, JNIEnv *env, fz_color_params cp)
 {
@@ -246,6 +295,20 @@ static inline jobject to_Image_safe(fz_context *ctx, JNIEnv *env, fz_image *img)
 		fz_drop_image(ctx, img);
 
 	return jimg;
+}
+
+static inline jobject to_Link_safe(fz_context *ctx, JNIEnv *env, fz_link *link)
+{
+	jobject jlink;
+
+	if (!ctx || !link) return NULL;
+
+	fz_keep_link(ctx, link);
+	jlink = (*env)->NewObject(env, cls_Link, mid_Link_init, jlong_cast(link));
+	if (!jlink)
+		fz_drop_link(ctx, link);
+
+	return jlink;
 }
 
 static inline jobject to_Matrix_safe(fz_context *ctx, JNIEnv *env, fz_matrix mat)
@@ -344,6 +407,20 @@ static inline jobject to_PDFAnnotation_safe(fz_context *ctx, JNIEnv *env, pdf_an
 	return jannot;
 }
 
+static inline jobject to_PDFDocument_safe(fz_context *ctx, JNIEnv *env, pdf_document *pdf)
+{
+	jobject jpdf;
+
+	if (!ctx || !pdf) return NULL;
+
+	pdf_keep_document(ctx, pdf);
+	jpdf = (*env)->NewObject(env, cls_PDFDocument, mid_PDFDocument_init, jlong_cast(pdf));
+	if (!jpdf)
+		pdf_drop_document(ctx, pdf);
+
+	return jpdf;
+}
+
 static inline jobject to_PDFObject_safe(fz_context *ctx, JNIEnv *env, pdf_obj *obj)
 {
 	jobject jobj;
@@ -402,6 +479,33 @@ static inline jobjectArray to_QuadArray_safe(fz_context *ctx, JNIEnv *env, const
 
 	return arr;
 }
+
+static inline jobject to_DOM_safe(fz_context *ctx, JNIEnv *env, fz_xml *xml)
+{
+	jobject jxml;
+
+	if (!ctx || !xml) return NULL;
+
+	fz_keep_xml(ctx, xml);
+	jxml = (*env)->NewObject(env, cls_DOM, mid_DOM_init, jlong_cast(xml));
+	if (!jxml) fz_drop_xml(ctx, xml);
+	if ((*env)->ExceptionCheck(env)) return NULL;
+
+	return jxml;
+}
+
+static inline jobject to_String_safe(fz_context *ctx, JNIEnv *env, const char *val)
+{
+	jstring jval;
+	if (!ctx) return NULL;
+
+	jval = (*env)->NewStringUTF(env, val);
+	if (!jval || (*env)->ExceptionCheck(env))
+		fz_throw_java(ctx, env);
+
+	return jval;
+}
+
 
 static int count_next_hits(const int *marks, int a, int end)
 {
@@ -552,6 +656,32 @@ static inline jobject to_PDFWidget_safe(fz_context *ctx, JNIEnv *env, pdf_annot 
 
 /* Conversion functions: C to Java. Take ownership of fitz object. None of these throw fitz exceptions. */
 
+static inline jobject to_Buffer_safe_own(fz_context *ctx, JNIEnv *env, fz_buffer *buf)
+{
+	jobject jobj;
+
+	if (!ctx || !buf) return NULL;
+
+	jobj = (*env)->NewObject(env, cls_Buffer, mid_Buffer_init, jlong_cast(buf));
+	if (!jobj)
+		fz_drop_buffer(ctx, buf);
+
+	return jobj;
+}
+
+static inline jobject to_ColorSpace_safe_own(fz_context *ctx, JNIEnv *env, fz_colorspace *cs)
+{
+	jobject jobj;
+
+	if (!ctx || !cs) return NULL;
+
+	jobj = (*env)->NewObject(env, cls_ColorSpace, mid_ColorSpace_init, jlong_cast(cs));
+	if (!jobj)
+		fz_drop_colorspace(ctx, cs);
+
+	return jobj;
+}
+
 static inline jobject to_Document_safe_own(fz_context *ctx, JNIEnv *env, fz_document *doc)
 {
 	jobject obj;
@@ -617,26 +747,10 @@ static inline jobject to_Page_safe_own(fz_context *ctx, JNIEnv *env, fz_page *pa
 static inline jobject to_Link_safe_own(fz_context *ctx, JNIEnv *env, fz_link *link)
 {
 	jobject jobj;
-	jobject jbounds = NULL;
-	jobject juri = NULL;
 
 	if (!ctx || !link) return NULL;
 
-	jbounds = to_Rect_safe(ctx, env, link->rect);
-	if (!jbounds || (*env)->ExceptionCheck(env))
-	{
-		fz_drop_link(ctx, link);
-		return NULL;
-	}
-
-	juri = (*env)->NewStringUTF(env, link->uri);
-	if (!juri || (*env)->ExceptionCheck(env))
-	{
-		fz_drop_link(ctx, link);
-		return NULL;
-	}
-
-	jobj = (*env)->NewObject(env, cls_Link, mid_Link_init, jbounds, juri);
+	jobj = (*env)->NewObject(env, cls_Link, mid_Link_init, jlong_cast(link));
 	if (!jobj)
 		fz_drop_link(ctx, link);
 
@@ -723,6 +837,15 @@ static inline jobject to_StructuredText_safe_own(fz_context *ctx, JNIEnv *env, f
 
 /* Conversion functions: Java to C. These all throw java exceptions. */
 
+static inline fz_archive *from_Archive(JNIEnv *env, jobject jobj)
+{
+	fz_archive *arch;
+	if (!jobj) return NULL;
+	arch = CAST(fz_archive *, (*env)->GetLongField(env, jobj, fid_Archive_pointer));
+	if (!arch) jni_throw_null(env, "cannot use already destroyed Archive");
+	return arch;
+}
+
 static inline fz_buffer *from_Buffer(JNIEnv *env, jobject jobj)
 {
 	fz_buffer *buffer;
@@ -748,6 +871,15 @@ static inline fz_cookie *from_Cookie(JNIEnv *env, jobject jobj)
 	cookie = CAST(fz_cookie *, (*env)->GetLongField(env, jobj, fid_Cookie_pointer));
 	if (!cookie) jni_throw_null(env, "cannot use already destroyed Cookie");
 	return cookie;
+}
+
+static inline fz_default_colorspaces *from_DefaultColorSpaces(JNIEnv *env, jobject jobj)
+{
+	fz_default_colorspaces *dcs;
+	if (!jobj) return NULL;
+	dcs = CAST(fz_default_colorspaces *, (*env)->GetLongField(env, jobj, fid_DefaultColorSpaces_pointer));
+	if (!dcs) jni_throw_null(env, "cannot use already destroyed DefaultColorSpaces");
+	return dcs;
 }
 
 static fz_device *from_Device(JNIEnv *env, jobject jobj)
@@ -802,6 +934,15 @@ static inline fz_image *from_Image(JNIEnv *env, jobject jobj)
 	image = CAST(fz_image *, (*env)->GetLongField(env, jobj, fid_Image_pointer));
 	if (!image) jni_throw_null(env, "cannot use already destroyed Image");
 	return image;
+}
+
+static inline fz_link *from_Link(JNIEnv *env, jobject jobj)
+{
+	fz_link *link;
+	if (!jobj) return NULL;
+	link = CAST(fz_link *, (*env)->GetLongField(env, jobj, fid_Link_pointer));
+	if (!link) jni_throw_null(env, "cannot use already destroyed Link");
+	return link;
 }
 
 static inline fz_outline_iterator *from_OutlineIterator(JNIEnv *env, jobject jobj)
@@ -1029,6 +1170,12 @@ static fz_link_dest from_LinkDestination(JNIEnv *env, jobject jdest)
 
 /* Conversion functions: Java to C. None of these throw java exceptions. */
 
+static inline fz_archive *from_Archive_safe(JNIEnv *env, jobject jobj)
+{
+	if (!jobj) return NULL;
+	return CAST(fz_archive *, (*env)->GetLongField(env, jobj, fid_Archive_pointer));
+}
+
 static inline fz_buffer *from_Buffer_safe(JNIEnv *env, jobject jobj)
 {
 	if (!jobj) return NULL;
@@ -1057,6 +1204,12 @@ static inline fz_cookie *from_Cookie_safe(JNIEnv *env, jobject jobj)
 {
 	if (!jobj) return NULL;
 	return CAST(fz_cookie *, (*env)->GetLongField(env, jobj, fid_Cookie_pointer));
+}
+
+static inline fz_default_colorspaces *from_DefaultColorSpaces_safe(JNIEnv *env, jobject jobj)
+{
+	if (!jobj) return NULL;
+	return CAST(fz_default_colorspaces *, (*env)->GetLongField(env, jobj, fid_DefaultColorSpaces_pointer));
 }
 
 static fz_device *from_Device_safe(JNIEnv *env, jobject jobj)
@@ -1089,10 +1242,22 @@ static inline fz_font *from_Font_safe(JNIEnv *env, jobject jobj)
 	return CAST(fz_font *, (*env)->GetLongField(env, jobj, fid_Font_pointer));
 }
 
+static inline fz_story *from_Story_safe(JNIEnv *env, jobject jobj)
+{
+	if (!jobj) return NULL;
+	return CAST(fz_story *, (*env)->GetLongField(env, jobj, fid_Story_pointer));
+}
+
 static inline fz_image *from_Image_safe(JNIEnv *env, jobject jobj)
 {
 	if (!jobj) return NULL;
 	return CAST(fz_image *, (*env)->GetLongField(env, jobj, fid_Image_pointer));
+}
+
+static inline fz_link *from_Link_safe(JNIEnv *env, jobject jobj)
+{
+	if (!jobj) return NULL;
+	return CAST(fz_link *, (*env)->GetLongField(env, jobj, fid_Link_pointer));
 }
 
 static inline fz_page *from_Page_safe(JNIEnv *env, jobject jobj)
@@ -1183,4 +1348,10 @@ static inline fz_text *from_Text_safe(JNIEnv *env, jobject jobj)
 {
 	if (!jobj) return NULL;
 	return CAST(fz_text *, (*env)->GetLongField(env, jobj, fid_Text_pointer));
+}
+
+static inline fz_xml *from_DOM_safe(JNIEnv *env, jobject jobj)
+{
+	if (!jobj) return NULL;
+	return CAST(fz_xml *, (*env)->GetLongField(env, jobj, fid_DOM_pointer));
 }

@@ -17,13 +17,13 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /* AndroidDrawDevice interface */
 
 static jlong
-newNativeAndroidDrawDevice(JNIEnv *env, jobject self, fz_context *ctx, jobject obj, jint width, jint height, NativeDeviceLockFn *lock, NativeDeviceUnlockFn *unlock, jint xOrigin, jint yOrigin, jint patchX0, jint patchY0, jint patchX1, jint patchY1)
+newNativeAndroidDrawDevice(JNIEnv *env, jobject self, fz_context *ctx, jobject obj, jint width, jint height, NativeDeviceLockFn *lock, NativeDeviceUnlockFn *unlock, jint xOrigin, jint yOrigin, jint patchX0, jint patchY0, jint patchX1, jint patchY1, jboolean clear)
 {
 	fz_device *device = NULL;
 	fz_pixmap *pixmap = NULL;
@@ -31,7 +31,7 @@ newNativeAndroidDrawDevice(JNIEnv *env, jobject self, fz_context *ctx, jobject o
 	NativeDeviceInfo *ninfo = NULL;
 	NativeDeviceInfo *info;
 	fz_irect bbox;
-	int err;
+	int err = 0;
 
 	if (!ctx) return 0;
 
@@ -64,16 +64,22 @@ newNativeAndroidDrawDevice(JNIEnv *env, jobject self, fz_context *ctx, jobject o
 		ninfo->object = obj;
 		(*env)->SetLongField(env, self, fid_NativeDevice_nativeInfo, jlong_cast(ninfo));
 		(*env)->SetObjectField(env, self, fid_NativeDevice_nativeResource, obj);
-		info = lockNativeDevice(env,self,&err);
-		if (!err)
+		if (clear)
 		{
-			fz_clear_pixmap_with_value(ctx, pixmap, 0xff);
-			unlockNativeDevice(env,ninfo);
-			device = fz_new_draw_device(ctx, fz_identity, pixmap);
+			info = lockNativeDevice(env,self,&err);
+			if (!err)
+			{
+				fz_clear_pixmap_with_value(ctx, pixmap, 0xff);
+				unlockNativeDevice(env,ninfo);
+			}
 		}
+		if (!err)
+			device = fz_new_draw_device(ctx, fz_identity, pixmap);
 	}
 	fz_catch(ctx)
 	{
+		(*env)->SetLongField(env, self, fid_NativeDevice_nativeInfo, 0);
+		(*env)->SetObjectField(env, self, fid_NativeDevice_nativeResource, NULL);
 		fz_drop_pixmap(ctx, pixmap);
 		fz_free(ctx, ninfo);
 		jni_rethrow(env, ctx);
@@ -82,6 +88,8 @@ newNativeAndroidDrawDevice(JNIEnv *env, jobject self, fz_context *ctx, jobject o
 	/* lockNativeDevice will already have raised a JNI error if there was one. */
 	if (err)
 	{
+		(*env)->SetLongField(env, self, fid_NativeDevice_nativeInfo, 0);
+		(*env)->SetObjectField(env, self, fid_NativeDevice_nativeResource, NULL);
 		fz_drop_pixmap(ctx, pixmap);
 		fz_free(ctx, ninfo);
 		return 0;
@@ -98,7 +106,11 @@ static int androidDrawDevice_lock(JNIEnv *env, NativeDeviceInfo *info)
 	fz_context *ctx = get_context(env);
 	size_t size = info->width * info->height * 4;
 
-	if (!ctx) jni_throw_run(env, "no context in DrawDevice call");
+	if (!ctx)
+	{
+		jni_throw_run_imp(env, "no context in DrawDevice call");
+		return 1;
+	}
 
 	assert(info);
 	assert(info->object);
@@ -114,7 +126,8 @@ static int androidDrawDevice_lock(JNIEnv *env, NativeDeviceInfo *info)
 	if (ret != ANDROID_BITMAP_RESULT_SUCCESS)
 	{
 		info->pixmap->samples = NULL;
-		jni_throw_run(env, "bitmap lock failed in DrawDevice call");
+		jni_throw_run_imp(env, "bitmap lock failed in DrawDevice call");
+		return 1;
 	}
 
 	/* Now offset pixels to allow for the page offsets */
@@ -158,7 +171,7 @@ FUN(android_AndroidDrawDevice_invertLuminance)(JNIEnv *env, jobject self)
 }
 
 JNIEXPORT jlong JNICALL
-FUN(android_AndroidDrawDevice_newNative)(JNIEnv *env, jclass self, jobject jbitmap, jint xOrigin, jint yOrigin, jint pX0, jint pY0, jint pX1, jint pY1)
+FUN(android_AndroidDrawDevice_newNative)(JNIEnv *env, jclass self, jobject jbitmap, jint xOrigin, jint yOrigin, jint pX0, jint pY0, jint pX1, jint pY1, jboolean clear)
 {
 	fz_context *ctx = get_context(env);
 	AndroidBitmapInfo info;
@@ -176,7 +189,7 @@ FUN(android_AndroidDrawDevice_newNative)(JNIEnv *env, jclass self, jobject jbitm
 		jni_throw_run(env, "new DrawDevice failed as bitmap width != stride");
 
 	fz_try(ctx)
-		device = newNativeAndroidDrawDevice(env, self, ctx, jbitmap, info.width, info.height, androidDrawDevice_lock, androidDrawDevice_unlock, xOrigin, yOrigin, pX0, pY0, pX1, pY1);
+		device = newNativeAndroidDrawDevice(env, self, ctx, jbitmap, info.width, info.height, androidDrawDevice_lock, androidDrawDevice_unlock, xOrigin, yOrigin, pX0, pY0, pX1, pY1, clear);
 	fz_catch(ctx)
 		jni_rethrow(env, ctx);
 

@@ -8,8 +8,8 @@ Notes:
     When building an sdist (e.g. with 'pip sdist'), we use clang-python to
     generate C++ source which is then included in the sdist.
 
-    Thus when we are in an sdist and are installing or building a wheel, we
-    don't need clang-python .
+    This allows wheels to be built from an sdist without requiring clang-python
+    to be installed.
 
 
 Internal testing only - environmental variables:
@@ -38,7 +38,6 @@ import platform
 import re
 import subprocess
 import sys
-import sys
 import time
 
 
@@ -66,6 +65,11 @@ def root_dir():
 def windows():
     s = platform.system()
     return s == 'Windows' or s.startswith('CYGWIN')
+
+@cache
+def macos():
+    s = platform.system()
+    return s == 'Darwin'
 
 @cache
 def build_dir():
@@ -157,7 +161,6 @@ def git_info():
         return text
     current = get_id('git show --pretty=oneline')
     origin = get_id('git show --pretty=oneline origin')
-    command = ''
     diff = subprocess.check_output(f'cd {root_dir()} && git diff', shell=True).decode('utf8')
     return current, origin, diff
 
@@ -189,8 +192,10 @@ def get_flag(name, default):
 
 def sdist():
     '''
-    pipcl callback. If we are a git checkout, return all files known to
-    git. Otherwise return all files except for those in build/.
+    pipcl callback. We run './scripts/mupdfwrap.py -b 0' to create C++ files
+    etc using clang-python, and return these generated files plus all files
+    known to git. [This allows sdists to be used to generate wheels etc on
+    machines without clang-python.]
     '''
     assert os.path.exists(f'{root_dir()}/.git'), f'Cannot make sdist because not a git checkout: {root_dir()}'
 
@@ -207,6 +212,23 @@ def sdist():
 
     paths = pipcl.git_items( root_dir(), submodules=True)
 
+    # Strip out some large test directories.
+    i = 0
+    while i < len( paths):
+        path = paths[i]
+        remove = False
+        if (0
+                or path.startswith( 'thirdparty/harfbuzz/test/')
+                or path.startswith( 'thirdparty/tesseract/test/')
+                or path.startswith( 'thirdparty/extract/test/')
+                ):
+            remove = True
+        if remove:
+            #log( f'Excluding: {path}')
+            del paths[i]
+        else:
+            i += 1
+
     # Build C++ files and SWIG C code for inclusion in sdist, so that it can be
     # used on systems without clang-python or SWIG.
     #
@@ -217,28 +239,24 @@ def sdist():
         b += '0'
     if use_swig:
         b += '2'
-    extra = ' --swig-windows-auto' if windows() else ''
     command = '' if os.getcwd() == root_dir() else f'cd {os.path.relpath(root_dir())} && '
-    command += f'{sys.executable} ./scripts/mupdfwrap.py{extra} -d {build_dir()} -b "{b}"'
+    command += f'{sys.executable} ./scripts/mupdfwrap.py -d {build_dir()} -b "{b}"'
     log(f'Running: {command}')
     subprocess.check_call(command, shell=True)
     paths += [
             'build/shared-release/mupdf.py',
             'git-info',
-            'platform/c++/c_functions.pickle',
-            'platform/c++/c_globals.pickle',
-            'platform/c++/container_classnames.pickle',
+            'platform/c++/generated.pickle',
             'platform/c++/implementation/classes.cpp',
+            'platform/c++/implementation/classes2.cpp',
             'platform/c++/implementation/exceptions.cpp',
             'platform/c++/implementation/functions.cpp',
             'platform/c++/implementation/internal.cpp',
             'platform/c++/include/mupdf/classes.h',
+            'platform/c++/include/mupdf/classes2.h',
             'platform/c++/include/mupdf/exceptions.h',
             'platform/c++/include/mupdf/functions.h',
             'platform/c++/include/mupdf/internal.h',
-            'platform/c++/swig_c.pickle',
-            'platform/c++/swig_python.pickle',
-            'platform/c++/to_string_structnames.pickle',
             'platform/c++/windows_mupdf.def',
             'platform/python/mupdfcpp_swig.cpp',
             ]
@@ -247,7 +265,8 @@ def sdist():
 
 def build():
     '''
-    pipcl callback. Build MuPDF C, C++ and Python libraries.
+    pipcl callback. Build MuPDF C, C++ and Python libraries and return list of
+    created files.
     '''
     # If we are an sdist, default to not trying to run clang-python - the
     # generated files will already exist, and installing/using clang-python
@@ -269,7 +288,6 @@ def build():
     command = '' if root_dir() == os.getcwd() else f'cd {os.path.relpath(root_dir())} && '
     command += (
             f'"{sys.executable}" ./scripts/mupdfwrap.py'
-            f'{" --swig-windows-auto" if windows() else ""}'
             f' -d {build_dir()}'
             f' -b {b}'
             )
@@ -290,6 +308,16 @@ def build():
                 f'mupdfcpp{infix}.dll', # C and C++.
                 '_mupdf.pyd',           # Python internals.
                 'mupdf.py',             # Python.
+                ]
+    elif macos():
+        log( f'Contents of {build_dir()} are:')
+        for leaf in os.listdir(build_dir()):
+            log( f'    {leaf}')
+        names = [
+                'libmupdf.dylib',   # C.
+                'libmupdfcpp.so',   # C++.
+                '_mupdf.so',        # Python internals.
+                'mupdf.py',         # Python.
                 ]
     else:
         names = [
@@ -338,6 +366,7 @@ Summary
 * MuPDF's ``setjmp``/``longjmp`` exceptions are converted to Python exceptions.
 * Functions and methods do not take ``fz_context`` arguments. (Automatically-generated per-thread contexts are used internally.)
 * Wrapper classes automatically handle reference counting of the underlying structs (with internal calls to ``fz_keep_*()`` and ``fz_drop_*()``).
+* Support for MuPDF function pointers with SWIG Director classes, allowing MuPDF to call Python callbacks.
 * Provides a small number of extensions beyond the basic C API:
 
   * Some generated classes have extra support for iteration.
@@ -414,7 +443,7 @@ Here is some example code that shows all available information about document's 
 More information
 ----------------
 
-https://twiki.ghostscript.com/do/view/Main/MuPDFWrap
+https://mupdf.com/r/C-and-Python-APIs
 
 """
 
@@ -432,7 +461,7 @@ mupdf_package = pipcl.Package(
                 ],
         author = 'Artifex Software, Inc.',
         author_email = 'support@artifex.com',
-        url_docs = 'https://twiki.ghostscript.com/do/view/Main/MuPDFWrap/',
+        url_docs = 'https://mupdf.com/r/C-and-Python-APIs',
         url_home = 'https://mupdf.com/',
         url_source = 'https://git.ghostscript.com/?p=mupdf.git',
         url_tracker = 'https://bugs.ghostscript.com/',

@@ -17,12 +17,14 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 
 #include "color-imp.h"
+
+#include <string.h>
 
 #if FZ_ENABLE_ICC
 
@@ -338,8 +340,10 @@ fz_new_icc_link(fz_context *ctx,
 	if (copy_spots)
 		flags |= cmsFLAGS_COPY_ALPHA;
 
+#ifdef cmsFLAGS_PREMULT
 	if (premult)
 		flags |= cmsFLAGS_PREMULT;
+#endif
 
 	if (prf_pro == NULL)
 	{
@@ -471,9 +475,15 @@ fz_icc_transform_pixmap(fz_context *ctx, fz_icc_link *link, const fz_pixmap *src
 
 	inputpos = src->samples;
 	outputpos = dst->samples;
-	/* LCMS can only handle premultiplied data if the number of 'extra'
+
+#ifdef cmsFLAGS_PREMULT
+	/* LCMS2MT can only handle premultiplied data if the number of 'extra'
 	 * channels is the same. If not, do it by steam. */
 	if (sa && cmm_extras != (int)T_EXTRA(dst_format))
+#else
+	/* Vanilla LCMS2 cannot handle premultiplied data. If present, do it by steam. */
+	if (sa)
+#endif
 	{
 		buffer = fz_malloc(ctx, ss);
 		for (; h > 0; h--)
@@ -488,6 +498,20 @@ fz_icc_transform_pixmap(fz_context *ctx, fz_icc_link *link, const fz_pixmap *src
 			else
 			{
 				cmsDoTransform(GLO link->handle, buffer, outputpos, sw);
+				if (!copy_spots)
+				{
+					/* Copy the alpha by steam */
+					unsigned char *d = outputpos + dn - 1;
+					const unsigned char *s = inputpos + sn -1;
+					int w = sw;
+
+					while (w--)
+					{
+						*d = *s;
+						d += dn;
+						s += sn;
+					}
+				}
 				if (mult == 1)
 					fz_premultiply_row_0or1(ctx, dn, dc, dw, outputpos);
 				else if (mult == 2)

@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /* Context interface */
 
@@ -107,6 +107,8 @@ static void log_callback(void *user, const char *message)
 		(*env)->CallVoidMethod(env, jcallback, mid, jmessage);
 		(*env)->DeleteLocalRef(env, jmessage);
 		(*env)->MonitorExit(env, jlock);
+		(*env)->DeleteLocalRef(env, jcallback);
+		(*env)->DeleteLocalRef(env, jlock);
 	}
 
 	jni_detach_thread(detach);
@@ -280,4 +282,51 @@ FUN(Context_getVersion)(JNIEnv *env, jclass cls)
 	(*env)->SetObjectField(env, jversion, fid_Context_Version_version, jvs);
 
 	return jversion;
+}
+
+JNIEXPORT void JNICALL
+FUN(Context_setUserCSS)(JNIEnv *env, jclass cls, jstring jcss)
+{
+	fz_context *ctx = get_context(env);
+	const char *css = NULL;
+
+	if (jcss)
+		css = (*env)->GetStringUTFChars(env, jcss, NULL);
+
+	fz_try(ctx)
+		fz_set_user_css(ctx, css);
+	fz_always(ctx)
+		if (jcss)
+			(*env)->ReleaseStringUTFChars(env, jcss, css);
+	fz_catch(ctx)
+		jni_rethrow_void(env, ctx);
+}
+
+JNIEXPORT void JNICALL
+FUN(Context_useDocumentCSS)(JNIEnv *env, jclass cls, jboolean state)
+{
+	fz_context *ctx = get_context(env);
+
+	fz_try(ctx)
+		fz_set_use_document_css(ctx, state);
+	fz_catch(ctx)
+		jni_rethrow_void(env, ctx);
+}
+
+JNIEXPORT jboolean JNICALL
+FUN(Context_shrinkStore)(JNIEnv *env, jclass cls, jint percent)
+{
+	fz_context *ctx = get_context(env);
+	int success = 0;
+
+	if (!ctx) return 0;
+	if (percent < 0) jni_throw_arg(env, "percent must not be negative");
+	if (percent > 100) jni_throw_arg(env, "percent must not be more than 100");
+
+	fz_try(ctx)
+		success = fz_shrink_store(ctx, percent);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return success != 0;
 }

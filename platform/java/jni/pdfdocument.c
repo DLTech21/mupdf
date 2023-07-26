@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2023 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /* PDFDocument interface */
 
@@ -38,7 +38,7 @@ static void free_event_cb_data(fz_context *ctx, void *data)
 	}
 }
 
-static void event_cb(fz_context *ctx, pdf_document *doc, pdf_doc_event *event, void *data)
+static void event_cb(fz_context *ctx, pdf_document *pdf, pdf_doc_event *event, void *data)
 {
 	jobject jlistener = (jobject)data;
 	jboolean detach = JNI_FALSE;
@@ -53,17 +53,41 @@ static void event_cb(fz_context *ctx, pdf_document *doc, pdf_doc_event *event, v
 	case PDF_DOCUMENT_EVENT_ALERT:
 		{
 			pdf_alert_event *alert;
-			jstring jstring = NULL;
+			jstring jtitle = NULL;
+			jstring jmessage = NULL;
+			jstring jcheckboxmsg = NULL;
+			jobject jalertresult;
+			jobject jpdf;
 
 			alert = pdf_access_alert_event(ctx, event);
 
-			jstring = (*env)->NewStringUTF(env, alert->message);
-			if (!jstring || (*env)->ExceptionCheck(env))
+			jpdf = to_PDFDocument_safe(ctx, env, pdf);
+			if (!jpdf || (*env)->ExceptionCheck(env))
 				fz_throw_java_and_detach_thread(ctx, env, detach);
 
-			(*env)->CallVoidMethod(env, jlistener, mid_PDFDocument_JsEventListener_onAlert, jstring);
+			jtitle = (*env)->NewStringUTF(env, alert->title);
+			if (!jtitle || (*env)->ExceptionCheck(env))
+				fz_throw_java_and_detach_thread(ctx, env, detach);
+
+			jmessage = (*env)->NewStringUTF(env, alert->message);
+			if (!jmessage || (*env)->ExceptionCheck(env))
+				fz_throw_java_and_detach_thread(ctx, env, detach);
+
+			if (alert->has_check_box) {
+				jcheckboxmsg = (*env)->NewStringUTF(env, alert->check_box_message);
+				if (!jcheckboxmsg || (*env)->ExceptionCheck(env))
+					fz_throw_java_and_detach_thread(ctx, env, detach);
+			}
+
+			jalertresult = (*env)->CallObjectMethod(env, jlistener, mid_PDFDocument_JsEventListener_onAlert, jpdf, jtitle, jmessage, alert->icon_type, alert->button_group_type, alert->has_check_box, jcheckboxmsg, alert->initially_checked);
 			if ((*env)->ExceptionCheck(env))
 				fz_throw_java_and_detach_thread(ctx, env, detach);
+
+			if (jalertresult)
+			{
+				alert->button_pressed = (*env)->GetIntField(env, jalertresult, fid_AlertResult_buttonPressed);
+				alert->finally_checked = (*env)->GetBooleanField(env, jalertresult, fid_AlertResult_checkboxChecked);
+			}
 		}
 		break;
 
@@ -532,8 +556,6 @@ FUN(PDFDocument_addPageBuffer)(JNIEnv *env, jobject self, jobject jmediabox, jin
 	pdf_obj *ind = NULL;
 
 	if (!ctx || !pdf) return NULL;
-	if (!resources) jni_throw_arg(env, "resources must not be null");
-	if (!contents) jni_throw_arg(env, "contents must not be null");
 
 	fz_try(ctx)
 		ind = pdf_add_page(ctx, pdf, mediabox, rotate, resources, contents);
@@ -555,8 +577,6 @@ FUN(PDFDocument_addPageString)(JNIEnv *env, jobject self, jobject jmediabox, jin
 	pdf_obj *ind = NULL;
 
 	if (!ctx || !pdf) return NULL;
-	if (!resources) jni_throw_arg(env, "resources must not be null");
-	if (!jcontents) jni_throw_arg(env, "contents must not be null");
 
 	scontents = (*env)->GetStringUTFChars(env, jcontents, NULL);
 	if (!scontents) return NULL;
@@ -1398,6 +1418,20 @@ FUN(PDFDocument_endOperation)(JNIEnv *env, jobject self)
 		jni_rethrow_void(env, ctx);
 }
 
+JNIEXPORT void JNICALL
+FUN(PDFDocument_abandonOperation)(JNIEnv *env, jobject self)
+{
+	fz_context *ctx = get_context(env);
+	pdf_document *pdf = from_PDFDocument(env, self);
+
+	if (!ctx || !pdf) return;
+
+	fz_try(ctx)
+		pdf_abandon_operation(ctx, pdf);
+	fz_catch(ctx)
+		jni_rethrow_void(env, ctx);
+}
+
 JNIEXPORT jboolean JNICALL
 FUN(PDFDocument_isRedacted)(JNIEnv *env, jobject self)
 {
@@ -1437,4 +1471,307 @@ FUN(PDFDocument_setLanguage)(JNIEnv *env, jobject self, jint lang)
 		pdf_set_document_language(ctx, pdf, lang);
 	fz_catch(ctx)
 		jni_rethrow_void(env, ctx);
+}
+
+JNIEXPORT jint JNICALL
+FUN(PDFDocument_countSignatures)(JNIEnv *env, jobject self)
+{
+	fz_context *ctx = get_context(env);
+	pdf_document *pdf = from_PDFDocument_safe(env, self);
+	jint val = -1;
+
+	if (!ctx || !pdf) return -1;
+
+	fz_try(ctx)
+		val = pdf_count_signatures(ctx, pdf);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return val;
+}
+
+JNIEXPORT jobject JNICALL
+FUN(PDFDocument_addEmbeddedFile)(JNIEnv *env, jobject self, jstring jfilename, jstring jmimetype, jobject jcontents, jlong created, jlong modified, jboolean addChecksum)
+{
+	fz_context *ctx = get_context(env);
+	pdf_document *pdf = from_PDFDocument_safe(env, self);
+	const char *filename = NULL;
+	const char *mimetype = NULL;
+	fz_buffer *contents = from_Buffer(env, jcontents);
+	pdf_obj *fs = NULL;
+
+	if (!ctx || !pdf) return NULL;
+	if (!jfilename) jni_throw_arg(env, "filename must not be null");
+
+	filename = (*env)->GetStringUTFChars(env, jfilename, NULL);
+	if (!filename) return NULL;
+
+	if (jmimetype)
+	{
+		mimetype = (*env)->GetStringUTFChars(env, jmimetype, NULL);
+		if (!mimetype)
+		{
+			(*env)->ReleaseStringUTFChars(env, jfilename, filename);
+			return NULL;
+		}
+	}
+
+	fz_try(ctx)
+		fs = pdf_add_embedded_file(ctx, pdf, filename, mimetype, contents, created, modified, addChecksum);
+	fz_always(ctx)
+	{
+		if (mimetype)
+			(*env)->ReleaseStringUTFChars(env, jmimetype, mimetype);
+		(*env)->ReleaseStringUTFChars(env, jfilename, filename);
+	}
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return to_PDFObject_safe(ctx, env, fs);
+}
+
+JNIEXPORT jstring JNICALL
+FUN(PDFDocument_getEmbeddedFileParams)(JNIEnv *env, jobject self, jobject jfs)
+{
+	fz_context *ctx = get_context(env);
+	pdf_obj *fs = from_PDFObject_safe(env, jfs);
+	pdf_embedded_file_params params;
+	jstring jfilename = NULL;
+	jstring jmimetype = NULL;
+
+	fz_try(ctx)
+		pdf_get_embedded_file_params(ctx, fs, &params);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	jfilename = (*env)->NewStringUTF(env, params.filename);
+	if (!jfilename || (*env)->ExceptionCheck(env))
+		return NULL;
+
+	jmimetype = (*env)->NewStringUTF(env, params.mimetype);
+	if (!jmimetype || (*env)->ExceptionCheck(env))
+		return NULL;
+
+	return (*env)->NewObject(env, cls_PDFDocument_PDFEmbeddedFileParams, mid_PDFDocument_PDFEmbeddedFileParams_init,
+		jfilename, jmimetype, params.size, params.created * 1000, params.modified * 1000);
+}
+
+JNIEXPORT jobject JNICALL
+FUN(PDFDocument_loadEmbeddedFileContents)(JNIEnv *env, jobject self, jobject jfs)
+{
+	fz_context *ctx = get_context(env);
+	pdf_obj *fs = from_PDFObject_safe(env, jfs);
+	fz_buffer *contents = NULL;
+
+	fz_try(ctx)
+		contents = pdf_load_embedded_file_contents(ctx, fs);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return to_Buffer_safe(ctx, env, contents);
+}
+
+JNIEXPORT jboolean JNICALL
+FUN(PDFDocument_verifyEmbeddedFileChecksum)(JNIEnv *env, jobject self, jobject jfs)
+{
+	fz_context *ctx = get_context(env);
+	pdf_obj *fs = from_PDFObject_safe(env, jfs);
+	int valid = 0;
+
+	fz_try(ctx)
+		valid = pdf_verify_embedded_file_checksum(ctx, fs);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return valid ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+FUN(PDFDocument_setPageLabels)(JNIEnv *env, jobject self, jint index, jint style, jstring jprefix, jint start)
+{
+	fz_context *ctx = get_context(env);
+	pdf_document *pdf = from_PDFDocument_safe(env, self);
+	const char *prefix = NULL;
+
+	if (jprefix)
+	{
+		prefix = (*env)->GetStringUTFChars(env, jprefix, NULL);
+		if (!prefix) return;
+	}
+
+	fz_try(ctx)
+	{
+		pdf_set_page_labels(ctx, pdf, index, style, prefix, start);
+	}
+	fz_always(ctx)
+	{
+		if (jprefix)
+			(*env)->ReleaseStringUTFChars(env, jprefix, prefix);
+	}
+	fz_catch(ctx)
+	{
+		jni_rethrow_void(env, ctx);
+	}
+}
+
+JNIEXPORT void JNICALL
+FUN(PDFDocument_deletePageLabels)(JNIEnv *env, jobject self, jint index)
+{
+	fz_context *ctx = get_context(env);
+	pdf_document *pdf = from_PDFDocument_safe(env, self);
+	fz_try(ctx)
+		pdf_delete_page_labels(ctx, pdf, index);
+	fz_catch(ctx)
+		jni_rethrow_void(env, ctx);
+}
+
+JNIEXPORT jint JNICALL
+FUN(PDFDocument_getVersion)(JNIEnv *env, jobject self)
+{
+	fz_context *ctx = get_context(env);
+	pdf_document *pdf = from_PDFDocument(env, self);
+	int version = 0;
+
+	if (!ctx || !pdf) return 0;
+
+	fz_try(ctx)
+		version = pdf_version(ctx, pdf);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return version;
+}
+
+JNIEXPORT jstring JNICALL
+FUN(PDFDocument_formatURIFromPathAndNamedDest)(JNIEnv *env, jclass cls, jstring jpath, jstring jname)
+{
+	fz_context *ctx = get_context(env);
+	char *uri = NULL;
+	jobject juri;
+	const char *path = NULL;
+	const char *name = NULL;
+
+	if (jpath)
+	{
+		path = (*env)->GetStringUTFChars(env, jpath, NULL);
+		if (!path) return NULL;
+	}
+	if (jname)
+	{
+		name = (*env)->GetStringUTFChars(env, jname, NULL);
+		if (!name) return NULL;
+	}
+
+	fz_try(ctx)
+		uri = pdf_new_uri_from_path_and_named_dest(ctx, path, name);
+	fz_always(ctx)
+	{
+		if (jname)
+			(*env)->ReleaseStringUTFChars(env, jname, name);
+		if (jpath)
+			(*env)->ReleaseStringUTFChars(env, jpath, path);
+	}
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	juri = (*env)->NewStringUTF(env, uri);
+	fz_free(ctx, uri);
+	return juri;
+}
+
+JNIEXPORT jstring JNICALL
+FUN(PDFDocument_formatURIFromPathAndExplicitDest)(JNIEnv *env, jclass cls, jstring jpath, jobject jdest)
+{
+	fz_context *ctx = get_context(env);
+	fz_link_dest dest = from_LinkDestination(env, jdest);
+	char *uri = NULL;
+	jobject juri;
+	const char *path = NULL;
+
+	if (jpath)
+	{
+		path = (*env)->GetStringUTFChars(env, jpath, NULL);
+		if (!path) return NULL;
+	}
+
+	fz_try(ctx)
+		uri = pdf_new_uri_from_path_and_explicit_dest(ctx, path, dest);
+	fz_always(ctx)
+	{
+		if (jpath)
+			(*env)->ReleaseStringUTFChars(env, jpath, path);
+	}
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	juri = (*env)->NewStringUTF(env, uri);
+	fz_free(ctx, uri);
+	return juri;
+}
+
+JNIEXPORT jstring JNICALL
+FUN(PDFDocument_appendNamedDestToURI)(JNIEnv *env, jclass cls, jstring jurl, jstring jname)
+{
+	fz_context *ctx = get_context(env);
+	char *uri = NULL;
+	jobject juri;
+	const char *url = NULL;
+	const char *name = NULL;
+
+	if (jurl)
+	{
+		url = (*env)->GetStringUTFChars(env, jurl, NULL);
+		if (!url) return NULL;
+	}
+	if (jname)
+	{
+		name = (*env)->GetStringUTFChars(env, jname, NULL);
+		if (!name) return NULL;
+	}
+
+	fz_try(ctx)
+		uri = pdf_append_named_dest_to_uri(ctx, url, name);
+	fz_always(ctx)
+	{
+		if (jname)
+			(*env)->ReleaseStringUTFChars(env, jname, name);
+		if (jurl)
+			(*env)->ReleaseStringUTFChars(env, jurl, url);
+	}
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	juri = (*env)->NewStringUTF(env, uri);
+	fz_free(ctx, uri);
+	return juri;
+}
+
+JNIEXPORT jstring JNICALL
+FUN(PDFDocument_appendExplicitDestToURI)(JNIEnv *env, jclass cls, jstring jurl, jobject jdest)
+{
+	fz_context *ctx = get_context(env);
+	fz_link_dest dest = from_LinkDestination(env, jdest);
+	char *uri = NULL;
+	jobject juri;
+	const char *url = NULL;
+
+	if (jurl)
+	{
+		url = (*env)->GetStringUTFChars(env, jurl, NULL);
+		if (!url) return NULL;
+	}
+
+	fz_try(ctx)
+		uri = pdf_append_explicit_dest_to_uri(ctx, url, dest);
+	fz_always(ctx)
+	{
+		if (jurl)
+			(*env)->ReleaseStringUTFChars(env, jurl, url);
+	}
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	juri = (*env)->NewStringUTF(env, uri);
+	fz_free(ctx, uri);
+	return juri;
 }

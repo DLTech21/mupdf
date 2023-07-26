@@ -21,6 +21,8 @@
 extern "C" {
 #endif
 
+#include "fitz/system.h"
+
 #define UCDN_EAST_ASIAN_F 0
 #define UCDN_EAST_ASIAN_H 1
 #define UCDN_EAST_ASIAN_W 2
@@ -190,7 +192,9 @@ extern "C" {
 #define UCDN_SCRIPT_CYPRO_MINOAN 159
 #define UCDN_SCRIPT_TANGSA 160
 #define UCDN_SCRIPT_TOTO 161
-#define UCDN_LAST_SCRIPT 161
+#define UCDN_SCRIPT_KAWI 162
+#define UCDN_SCRIPT_NAG_MUNDARI 163
+#define UCDN_LAST_SCRIPT 163
 
 #define UCDN_LINEBREAK_CLASS_OP 0
 #define UCDN_LINEBREAK_CLASS_CL 1

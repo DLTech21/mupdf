@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 #include "mupdf/pdf.h"
@@ -90,8 +90,8 @@ pdf_store_item(fz_context *ctx, pdf_obj *key, void *val, size_t itemsize)
 
 	assert(pdf_is_name(ctx, key) || pdf_is_array(ctx, key) || pdf_is_dict(ctx, key) || pdf_is_indirect(ctx, key));
 	existing = fz_store_item(ctx, key, val, itemsize, &pdf_obj_store_type);
-	assert(existing == NULL);
-	(void)existing; /* Silence warning in release builds */
+	if (existing)
+		fz_warn(ctx, "unexpectedly replacing entry in PDF store");
 }
 
 void *

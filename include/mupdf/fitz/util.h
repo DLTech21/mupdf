@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #ifndef MUPDF_FITZ_UTIL_H
 #define MUPDF_FITZ_UTIL_H
@@ -30,6 +30,9 @@
 #include "mupdf/fitz/pixmap.h"
 #include "mupdf/fitz/structured-text.h"
 #include "mupdf/fitz/buffer.h"
+#include "mupdf/fitz/xml.h"
+#include "mupdf/fitz/archive.h"
+#include "mupdf/fitz/display-list.h"
 
 /**
 	Create a display list.
@@ -71,6 +74,8 @@ fz_pixmap *fz_new_pixmap_from_display_list_with_separations(fz_context *ctx, fz_
 fz_pixmap *fz_new_pixmap_from_page_with_separations(fz_context *ctx, fz_page *page, fz_matrix ctm, fz_colorspace *cs, fz_separations *seps, int alpha);
 fz_pixmap *fz_new_pixmap_from_page_number_with_separations(fz_context *ctx, fz_document *doc, int number, fz_matrix ctm, fz_colorspace *cs, fz_separations *seps, int alpha);
 fz_pixmap *fz_new_pixmap_from_page_contents_with_separations(fz_context *ctx, fz_page *page, fz_matrix ctm, fz_colorspace *cs, fz_separations *seps, int alpha);
+
+fz_pixmap *fz_fill_pixmap_from_display_list(fz_context *ctx, fz_display_list *list, fz_matrix ctm, fz_pixmap *pix);
 
 /**
 	Extract text from page.
@@ -125,6 +130,8 @@ fz_image *fz_new_image_from_svg_xml(fz_context *ctx, fz_xml_doc *xmldoc, fz_xml 
 */
 void fz_write_image_as_data_uri(fz_context *ctx, fz_output *out, fz_image *image);
 void fz_write_pixmap_as_data_uri(fz_context *ctx, fz_output *out, fz_pixmap *pixmap);
+void fz_append_image_as_data_uri(fz_context *ctx, fz_buffer *out, fz_image *image);
+void fz_append_pixmap_as_data_uri(fz_context *ctx, fz_buffer *out, fz_pixmap *pixmap);
 
 /**
 	Use text extraction to convert the input document into XHTML,

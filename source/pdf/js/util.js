@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 Error.prototype.toString = function() {
 	if (this.stackTrace) return this.name + ': ' + this.message + this.stackTrace;
@@ -879,10 +879,6 @@ String.prototype.substr = function (start, length) {
 Date.prototype.getYear = Date.prototype.getFullYear;
 Date.prototype.setYear = Date.prototype.setFullYear;
 Date.prototype.toGMTString = Date.prototype.toUTCString;
-
-console.clear = function() { console.println('--- clear console ---\n'); };
-console.show = function(){};
-console.hide = function(){};
 
 app.plugIns = [];
 app.viewerType = 'Reader';

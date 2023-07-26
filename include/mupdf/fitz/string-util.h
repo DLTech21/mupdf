@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,13 +17,14 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #ifndef MUPDF_FITZ_STRING_H
 #define MUPDF_FITZ_STRING_H
 
 #include "mupdf/fitz/system.h"
+#include "mupdf/fitz/context.h"
 
 /* The Unicode character used to incoming character whose value is
  * unknown or unrepresentable. */
@@ -98,9 +99,44 @@ void *fz_memmem(const void *haystack, size_t haystacklen, const void *needle, si
 void fz_dirname(char *dir, const char *path, size_t dirsize);
 
 /**
-	decode url escapes.
+	Find the filename component in a path.
+*/
+const char *fz_basename(const char *path);
+
+/**
+	Like fz_decode_uri_component but in-place.
 */
 char *fz_urldecode(char *url);
+
+/**
+ * Return a new string representing the unencoded version of the given URI.
+ * This decodes all escape sequences except those that would result in a reserved
+ * character that are part of the URI syntax (; / ? : @ & = + $ , #).
+ */
+char *fz_decode_uri(fz_context *ctx, const char *s);
+
+/**
+ * Return a new string representing the unencoded version of the given URI component.
+ * This decodes all escape sequences!
+ */
+char *fz_decode_uri_component(fz_context *ctx, const char *s);
+
+/**
+ * Return a new string representing the provided string encoded as a URI.
+ */
+char *fz_encode_uri(fz_context *ctx, const char *s);
+
+/**
+ * Return a new string representing the provided string encoded as an URI component.
+ * This also encodes the special reserved characters (; / ? : @ & = + $ , #).
+ */
+char *fz_encode_uri_component(fz_context *ctx, const char *s);
+
+/**
+ * Return a new string representing the provided string encoded as an URI path name.
+ * This also encodes the special reserved characters except /.
+ */
+char *fz_encode_uri_pathname(fz_context *ctx, const char *s);
 
 /**
 	create output file name using a template.
@@ -217,9 +253,15 @@ int fz_grisu(float f, char *s, int *exp);
 
 /**
 	Check and parse string into page ranges:
-		( ','? ([0-9]+|'N') ( '-' ([0-9]+|N) )? )+
+		/,?(-?\d+|N)(-(-?\d+|N))?/
 */
 int fz_is_page_range(fz_context *ctx, const char *s);
 const char *fz_parse_page_range(fz_context *ctx, const char *s, int *a, int *b, int n);
+
+/**
+	Unicode aware tolower and toupper functions.
+*/
+int fz_tolower(int c);
+int fz_toupper(int c);
 
 #endif

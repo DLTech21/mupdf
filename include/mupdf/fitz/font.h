@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #ifndef MUPDF_FITZ_FONT_H
 #define MUPDF_FITZ_FONT_H
@@ -27,6 +27,7 @@
 #include "mupdf/fitz/context.h"
 #include "mupdf/fitz/geometry.h"
 #include "mupdf/fitz/buffer.h"
+#include "mupdf/fitz/color.h"
 
 /* forward declaration for circular dependency */
 struct fz_device;
@@ -118,6 +119,9 @@ typedef struct
 
 	unsigned int cjk : 1;
 	unsigned int cjk_lang : 2; /* CNS, GB, JAPAN, or KOREA */
+
+	unsigned int embed : 1;
+	unsigned int never_embed : 1;
 } fz_font_flags_t;
 
 /**
@@ -414,8 +418,9 @@ fz_font *fz_load_fallback_font(fz_context *ctx, int script, int language, int se
 fz_font *fz_new_type3_font(fz_context *ctx, const char *name, fz_matrix matrix);
 
 /**
-	Create a new font from a font
-	file in memory.
+	Create a new font from a font file in memory.
+
+	Fonts created in this way, will be eligible for embedding by default.
 
 	name: Name of font (leave NULL to use name from font).
 
@@ -434,6 +439,8 @@ fz_font *fz_new_font_from_memory(fz_context *ctx, const char *name, const unsign
 /**
 	Create a new font from a font file in a fz_buffer.
 
+	Fonts created in this way, will be eligible for embedding by default.
+
 	name: Name of font (leave NULL to use name from font).
 
 	buffer: Buffer to load from.
@@ -448,6 +455,8 @@ fz_font *fz_new_font_from_buffer(fz_context *ctx, const char *name, fz_buffer *b
 
 /**
 	Create a new font from a font file.
+
+	Fonts created in this way, will be eligible for embedding by default.
 
 	name: Name of font (leave NULL to use name from font).
 
@@ -467,6 +476,11 @@ fz_font *fz_new_font_from_file(fz_context *ctx, const char *name, const char *pa
 fz_font *fz_new_base14_font(fz_context *ctx, const char *name);
 fz_font *fz_new_cjk_font(fz_context *ctx, int ordering);
 fz_font *fz_new_builtin_font(fz_context *ctx, const char *name, int is_bold, int is_italic);
+
+/**
+	Control whether a given font should be embedded or not when writing.
+*/
+void fz_set_font_embedding(fz_context *ctx, fz_font *font, int embed);
 
 /**
 	Add a reference to an existing fz_font.
@@ -705,8 +719,9 @@ struct fz_font
 
 	int glyph_count;
 
-	/* per glyph bounding box cache */
-	fz_rect *bbox_table;
+	/* per glyph bounding box cache. */
+	fz_rect **bbox_table;
+	int use_glyph_bbox;
 
 	/* substitute metrics */
 	int width_count;
@@ -714,7 +729,7 @@ struct fz_font
 	short *width_table; /* in 1000 units */
 
 	/* cached glyph metrics */
-	float *advance_cache;
+	float **advance_cache;
 
 	/* cached encoding lookup */
 	uint16_t *encoding_cache[256];
@@ -722,6 +737,9 @@ struct fz_font
 	/* cached md5sum for caching */
 	int has_digest;
 	unsigned char digest[16];
+
+	/* Which font to use in a collection. */
+	int subfont;
 };
 
 #endif

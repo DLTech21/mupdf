@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 #include "pdf-annot-imp.h"
@@ -33,6 +33,7 @@
 /* #define DEBUG_LINEARIZATION */
 /* #define DEBUG_HEAP_SORT */
 /* #define DEBUG_WRITING */
+/* #define DEBUG_MARK_AND_SWEEP */
 
 #define SIG_EXTRAS_SIZE (1024)
 
@@ -111,7 +112,7 @@ typedef struct
 	int64_t first_xref_entry_offset;
 	int64_t file_len;
 	int hints_shared_offset;
-	int hintstream_len;
+	int64_t hintstream_len;
 	pdf_obj *linear_l;
 	pdf_obj *linear_h0;
 	pdf_obj *linear_h1;
@@ -716,72 +717,23 @@ static void removeduplicateobjs(fz_context *ctx, pdf_document *doc, pdf_write_st
 		for (other = 1; other < num; other++)
 		{
 			pdf_obj *a, *b;
-			int newnum, streama = 0, streamb = 0, differ = 0;
+			int newnum;
 
 			if (num == other || num >= opts->list_len || !opts->use_list[num] || !opts->use_list[other])
 				continue;
 
 			/* TODO: resolve indirect references to see if we can omit them */
 
-			/*
-			 * Comparing stream objects data contents would take too long.
-			 *
-			 * pdf_obj_num_is_stream calls pdf_cache_object and ensures
-			 * that the xref table has the objects loaded.
-			 */
-			fz_try(ctx)
+			a = pdf_get_xref_entry_no_null(ctx, doc, num)->obj;
+			b = pdf_get_xref_entry_no_null(ctx, doc, other)->obj;
+			if (opts->do_garbage >= 4)
 			{
-				streama = pdf_obj_num_is_stream(ctx, doc, num);
-				streamb = pdf_obj_num_is_stream(ctx, doc, other);
-				differ = streama || streamb;
-				if (streama && streamb && opts->do_garbage >= 4)
-					differ = 0;
+				if (pdf_objcmp_deep(ctx, a, b))
+					continue;
 			}
-			fz_catch(ctx)
+			else
 			{
-				/* Assume different */
-				differ = 1;
-			}
-			if (differ)
-				continue;
-
-			a = pdf_get_xref_entry(ctx, doc, num)->obj;
-			b = pdf_get_xref_entry(ctx, doc, other)->obj;
-
-			if (pdf_objcmp(ctx, a, b))
-				continue;
-
-			if (streama && streamb)
-			{
-				/* Check to see if streams match too. */
-				fz_buffer *sa = NULL;
-				fz_buffer *sb = NULL;
-
-				fz_var(sa);
-				fz_var(sb);
-
-				differ = 1;
-				fz_try(ctx)
-				{
-					unsigned char *dataa, *datab;
-					size_t lena, lenb;
-					sa = pdf_load_raw_stream_number(ctx, doc, num);
-					sb = pdf_load_raw_stream_number(ctx, doc, other);
-					lena = fz_buffer_storage(ctx, sa, &dataa);
-					lenb = fz_buffer_storage(ctx, sb, &datab);
-					if (lena == lenb && memcmp(dataa, datab, lena) == 0)
-						differ = 0;
-				}
-				fz_always(ctx)
-				{
-					fz_drop_buffer(ctx, sa);
-					fz_drop_buffer(ctx, sb);
-				}
-				fz_catch(ctx)
-				{
-					fz_rethrow(ctx);
-				}
-				if (differ)
+				if (pdf_objcmp(ctx, a, b))
 					continue;
 			}
 
@@ -923,7 +875,7 @@ static void renumberobjs(fz_context *ctx, pdf_document *doc, pdf_write_state *op
 			if (to == 0)
 				continue;
 
-			obj = pdf_get_xref_entry(ctx, doc, num)->obj;
+			obj = pdf_get_xref_entry_no_null(ctx, doc, num)->obj;
 
 			if (pdf_is_indirect(ctx, obj))
 			{
@@ -943,7 +895,7 @@ static void renumberobjs(fz_context *ctx, pdf_document *doc, pdf_write_state *op
 
 		/* Create new table for the reordered, compacted xref */
 		newxref = Memento_label(fz_malloc_array(ctx, xref_len + 3, pdf_xref_entry), "pdf_xref_entries");
-		newxref[0] = *pdf_get_xref_entry(ctx, doc, 0);
+		newxref[0] = *pdf_get_xref_entry_no_null(ctx, doc, 0);
 
 		/* Move used objects into the new compacted xref */
 		newlen = 0;
@@ -954,7 +906,7 @@ static void renumberobjs(fz_context *ctx, pdf_document *doc, pdf_write_state *op
 				pdf_xref_entry *e;
 				if (newlen < opts->renumber_map[num])
 					newlen = opts->renumber_map[num];
-				e = pdf_get_xref_entry(ctx, doc, num);
+				e = pdf_get_xref_entry_no_null(ctx, doc, num);
 				newxref[opts->renumber_map[num]] = *e;
 				if (e->obj)
 					pdf_set_obj_parent(ctx, e->obj, opts->renumber_map[num]);
@@ -964,7 +916,7 @@ static void renumberobjs(fz_context *ctx, pdf_document *doc, pdf_write_state *op
 			}
 			else
 			{
-				pdf_xref_entry *e = pdf_get_xref_entry(ctx, doc, num);
+				pdf_xref_entry *e = pdf_get_xref_entry_no_null(ctx, doc, num);
 				pdf_drop_obj(ctx, e->obj);
 				e->obj = NULL;
 				fz_drop_buffer(ctx, e->stm_buf);
@@ -1287,7 +1239,7 @@ add_linearization_objs(fz_context *ctx, pdf_document *doc, pdf_write_state *opts
 		pdf_dict_put(ctx, hint_obj, PDF_NAME(Filter), PDF_NAME(FlateDecode));
 		opts->hints_length = pdf_new_int(ctx, INT_MIN);
 		pdf_dict_put(ctx, hint_obj, PDF_NAME(Length), opts->hints_length);
-		xe = pdf_get_xref_entry(ctx, doc, hint_num);
+		xe = pdf_get_xref_entry_no_null(ctx, doc, hint_num);
 		xe->stm_ofs = 0;
 		/* Empty stream, required so that we write the object as
 		 * a stream during the first pass. Without this, offsets
@@ -1597,13 +1549,31 @@ static void preloadobjstms(fz_context *ctx, pdf_document *doc)
 	pdf_obj *obj;
 	int num;
 
+	/* If we have attempted a repair, then everything will have been
+	 * loaded already. */
+	if (doc->repair_attempted)
+		return;
+
+	fz_var(num);
+
 	/* xref_len may change due to repair, so check it every iteration */
 	for (num = 0; num < pdf_xref_len(ctx, doc); num++)
 	{
-		if (pdf_get_xref_entry(ctx, doc, num)->type == 'o')
+		fz_try(ctx)
 		{
-			obj = pdf_load_object(ctx, doc, num);
-			pdf_drop_obj(ctx, obj);
+			for (; num < pdf_xref_len(ctx, doc); num++)
+			{
+				if (pdf_get_xref_entry_no_null(ctx, doc, num)->type == 'o')
+				{
+					obj = pdf_load_object(ctx, doc, num);
+					pdf_drop_obj(ctx, obj);
+				}
+			}
+		}
+		fz_catch(ctx)
+		{
+			/* Ignore the error, so we can carry on trying to load. */
+			fz_warn(ctx, "%s", fz_caught_message(ctx));
 		}
 	}
 }
@@ -2245,7 +2215,12 @@ static void writexref(fz_context *ctx, pdf_document *doc, pdf_write_state *opts,
 				pdf_dict_put(ctx, trailer, PDF_NAME(ID), obj);
 
 			if (opts->crypt_obj)
-				pdf_dict_put(ctx, trailer, PDF_NAME(Encrypt), opts->crypt_obj);
+			{
+				if (pdf_is_indirect(ctx, opts->crypt_obj))
+					pdf_dict_put_drop(ctx, trailer, PDF_NAME(Encrypt), pdf_new_indirect(ctx, doc, opts->crypt_object_number, 0));
+				else
+					pdf_dict_put(ctx, trailer, PDF_NAME(Encrypt), opts->crypt_obj);
+			}
 
 			if (opts->metadata)
 				pdf_dict_putp(ctx, trailer, "Root/Metadata", opts->metadata);
@@ -2266,7 +2241,7 @@ static void writexref(fz_context *ctx, pdf_document *doc, pdf_write_state *opts,
 
 	fz_write_printf(ctx, opts->out, "startxref\n%lu\n%%%%EOF\n", startxref);
 
-	doc->has_xref_streams = 0;
+	doc->last_xref_was_old_style = 1;
 }
 
 static void writexrefstreamsubsect(fz_context *ctx, pdf_document *doc, pdf_write_state *opts, pdf_obj *index, fz_buffer *fzbuf, int from, int to)
@@ -2407,7 +2382,7 @@ static void writexrefstream(fz_context *ctx, pdf_document *doc, pdf_write_state 
 		fz_rethrow(ctx);
 	}
 
-	doc->has_old_style_xrefs = 0;
+	doc->last_xref_was_old_style = 0;
 }
 
 static void
@@ -2426,7 +2401,7 @@ padto(fz_context *ctx, fz_output *out, int64_t target)
 static void
 dowriteobject(fz_context *ctx, pdf_document *doc, pdf_write_state *opts, int num, int pass)
 {
-	pdf_xref_entry *entry = pdf_get_xref_entry(ctx, doc, num);
+	pdf_xref_entry *entry = pdf_get_xref_entry_no_null(ctx, doc, num);
 	int gen = opts->gen_list ? opts->gen_list[num] : 0;
 	if (entry->type == 'f')
 		gen = entry->gen;
@@ -2828,7 +2803,7 @@ make_hint_stream(fz_context *ctx, pdf_document *doc, pdf_write_state *opts)
 		make_page_offset_hints(ctx, doc, opts, buf);
 		obj = pdf_load_object(ctx, doc, pdf_xref_len(ctx, doc)-1);
 		pdf_update_stream(ctx, doc, obj, buf, 0);
-		opts->hintstream_len = (int)fz_buffer_storage(ctx, buf, NULL);
+		opts->hintstream_len = (int64_t)fz_buffer_storage(ctx, buf, NULL);
 	}
 	fz_always(ctx)
 	{
@@ -2894,6 +2869,8 @@ static void complete_signatures(fz_context *ctx, pdf_document *doc, pdf_write_st
 	char *buf = NULL, *ptr;
 	int s;
 	fz_stream *stm = NULL;
+
+	fz_var(byte_range);
 	fz_var(stm);
 	fz_var(buf);
 
@@ -3021,11 +2998,15 @@ static void clean_content_streams(fz_context *ctx, pdf_document *doc, int saniti
 	int n = pdf_count_pages(ctx, doc);
 	int i;
 
-	pdf_filter_options filter;
-	memset(&filter, 0, sizeof filter);
-	filter.recurse = 1;
-	filter.sanitize = sanitize;
-	filter.ascii = ascii;
+	pdf_filter_options options = { 0 };
+	pdf_sanitize_filter_options sopts = { 0 };
+	pdf_filter_factory list[2] = { 0 };
+
+	options.recurse = 1;
+	options.ascii = ascii;
+	options.filters = sanitize ? list : NULL;
+	list[0].filter = pdf_new_sanitize_filter;
+	list[0].options = &sopts;
 
 	for (i = 0; i < n; i++)
 	{
@@ -3034,10 +3015,10 @@ static void clean_content_streams(fz_context *ctx, pdf_document *doc, int saniti
 
 		fz_try(ctx)
 		{
-			pdf_filter_page_contents(ctx, doc, page, &filter);
+			pdf_filter_page_contents(ctx, doc, page, &options);
 			for (annot = pdf_first_annot(ctx, page); annot != NULL; annot = pdf_next_annot(ctx, annot))
 			{
-				pdf_filter_annot_contents(ctx, doc, annot, &filter);
+				pdf_filter_annot_contents(ctx, doc, annot, &options);
 			}
 		}
 		fz_always(ctx)
@@ -3257,8 +3238,6 @@ int pdf_can_be_saved_incrementally(fz_context *ctx, pdf_document *doc)
 		return 0;
 	if (doc->redacted)
 		return 0;
-	if (doc->has_xref_streams && doc->has_old_style_xrefs)
-		return 0;
 	return 1;
 }
 
@@ -3270,11 +3249,15 @@ prepare_for_save(fz_context *ctx, pdf_document *doc, const pdf_write_options *in
 	{
 		pdf_begin_operation(ctx, doc, "Clean content streams");
 		fz_try(ctx)
+		{
 			clean_content_streams(ctx, doc, in_opts->do_sanitize, in_opts->do_ascii);
-		fz_always(ctx)
 			pdf_end_operation(ctx, doc);
+		}
 		fz_catch(ctx)
+		{
+			pdf_abandon_operation(ctx, doc);
 			fz_rethrow(ctx);
+		}
 	}
 
 	/* When saving a PDF with signatures the file will
@@ -3473,6 +3456,7 @@ do_pdf_save_document(fz_context *ctx, pdf_document *doc, pdf_write_state *opts, 
 
 	xref_len = pdf_xref_len(ctx, doc);
 
+	pdf_begin_operation(ctx, doc, "Save document");
 	fz_try(ctx)
 	{
 		initialise_write_state(ctx, doc, in_opts, opts);
@@ -3599,7 +3583,7 @@ do_pdf_save_document(fz_context *ctx, pdf_document *doc, pdf_write_state *opts, 
 				}
 
 				opts->first_xref_offset = fz_tell_output(ctx, opts->out);
-				if (doc->has_xref_streams)
+				if (!doc->last_xref_was_old_style)
 					writexrefstream(ctx, doc, opts, 0, xref_len, 1, 0, opts->first_xref_offset);
 				else
 					writexref(ctx, doc, opts, 0, xref_len, 1, 0, opts->first_xref_offset);
@@ -3664,6 +3648,7 @@ do_pdf_save_document(fz_context *ctx, pdf_document *doc, pdf_write_state *opts, 
 		{
 			complete_signatures(ctx, doc, opts);
 		}
+		pdf_end_operation(ctx, doc);
 	}
 	fz_always(ctx)
 	{
@@ -3680,6 +3665,7 @@ do_pdf_save_document(fz_context *ctx, pdf_document *doc, pdf_write_state *opts, 
 	}
 	fz_catch(ctx)
 	{
+		pdf_abandon_operation(ctx, doc);
 		fz_rethrow(ctx);
 	}
 }

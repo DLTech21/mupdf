@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 #include "mupdf/pdf.h"
@@ -26,10 +26,14 @@
 #include <string.h>
 
 static pdf_obj *
-pdf_lookup_name_imp(fz_context *ctx, pdf_obj *node, pdf_obj *needle)
+pdf_lookup_name_imp(fz_context *ctx, pdf_obj *node, pdf_obj *needle, pdf_cycle_list *cycle_up)
 {
+	pdf_cycle_list cycle;
 	pdf_obj *kids = pdf_dict_get(ctx, node, PDF_NAME(Kids));
 	pdf_obj *names = pdf_dict_get(ctx, node, PDF_NAME(Names));
+
+	if (pdf_cycle(ctx, &cycle, cycle_up, node))
+		return NULL;
 
 	if (pdf_is_array(ctx, kids))
 	{
@@ -44,24 +48,40 @@ pdf_lookup_name_imp(fz_context *ctx, pdf_obj *node, pdf_obj *needle)
 			pdf_obj *first = pdf_array_get(ctx, limits, 0);
 			pdf_obj *last = pdf_array_get(ctx, limits, 1);
 
+			if (!pdf_is_indirect(ctx, kid))
+			{
+				fz_warn(ctx, "non-indirect internal node found in name tree");
+				break;
+			}
 			if (pdf_objcmp(ctx, needle, first) < 0)
 				r = m - 1;
 			else if (pdf_objcmp(ctx, needle, last) > 0)
 				l = m + 1;
 			else
 			{
-				pdf_obj *obj;
-
-				if (pdf_mark_obj(ctx, node))
+				pdf_obj *obj = pdf_lookup_name_imp(ctx, kid, needle, &cycle);
+				if (obj)
+					return obj;
+				else
 					break;
-				fz_try(ctx)
-					obj = pdf_lookup_name_imp(ctx, kid, needle);
-				fz_always(ctx)
-					pdf_unmark_obj(ctx, node);
-				fz_catch(ctx)
-					fz_rethrow(ctx);
-				return obj;
 			}
+		}
+
+		/* Spec says names should be sorted (hence the binary search,
+		 * above), but Acrobat copes with non-sorted. Drop back to a
+		 * simple search if the binary search fails. */
+		r = pdf_array_len(ctx, kids);
+		for (l = 0; l < r; l++)
+		{
+			pdf_obj *obj, *kid = pdf_array_get(ctx, kids, l);
+			if (!pdf_is_indirect(ctx, kid))
+			{
+				fz_warn(ctx, "non-indirect internal node found in name tree");
+				continue;
+			}
+			obj = pdf_lookup_name_imp(ctx, kid, needle, &cycle);
+			if (obj)
+				return obj;
 		}
 	}
 
@@ -104,7 +124,7 @@ pdf_lookup_name(fz_context *ctx, pdf_document *doc, pdf_obj *which, pdf_obj *nee
 	pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root));
 	pdf_obj *names = pdf_dict_get(ctx, root, PDF_NAME(Names));
 	pdf_obj *tree = pdf_dict_get(ctx, names, which);
-	return pdf_lookup_name_imp(ctx, tree, needle);
+	return pdf_lookup_name_imp(ctx, tree, needle, NULL);
 }
 
 pdf_obj *
@@ -128,31 +148,25 @@ pdf_lookup_dest(fz_context *ctx, pdf_document *doc, pdf_obj *needle)
 	if (names && !dest)
 	{
 		pdf_obj *tree = pdf_dict_get(ctx, names, PDF_NAME(Dests));
-		return pdf_lookup_name_imp(ctx, tree, needle);
+		return pdf_lookup_name_imp(ctx, tree, needle, NULL);
 	}
 
 	return NULL;
 }
 
 static void
-pdf_load_name_tree_imp(fz_context *ctx, pdf_obj *dict, pdf_document *doc, pdf_obj *node)
+pdf_load_name_tree_imp(fz_context *ctx, pdf_obj *dict, pdf_document *doc, pdf_obj *node, pdf_cycle_list *cycle_up)
 {
+	pdf_cycle_list cycle;
 	pdf_obj *kids = pdf_dict_get(ctx, node, PDF_NAME(Kids));
 	pdf_obj *names = pdf_dict_get(ctx, node, PDF_NAME(Names));
 	int i;
 
-	if (kids && !pdf_mark_obj(ctx, node))
+	if (kids && !pdf_cycle(ctx, &cycle, cycle_up, node))
 	{
-		fz_try(ctx)
-		{
-			int len = pdf_array_len(ctx, kids);
-			for (i = 0; i < len; i++)
-				pdf_load_name_tree_imp(ctx, dict, doc, pdf_array_get(ctx, kids, i));
-		}
-		fz_always(ctx)
-			pdf_unmark_obj(ctx, node);
-		fz_catch(ctx)
-			fz_rethrow(ctx);
+		int len = pdf_array_len(ctx, kids);
+		for (i = 0; i < len; i++)
+			pdf_load_name_tree_imp(ctx, dict, doc, pdf_array_get(ctx, kids, i), &cycle);
 	}
 
 	if (names)
@@ -190,15 +204,16 @@ pdf_load_name_tree(fz_context *ctx, pdf_document *doc, pdf_obj *which)
 	if (pdf_is_dict(ctx, tree))
 	{
 		pdf_obj *dict = pdf_new_dict(ctx, doc, 100);
-		pdf_load_name_tree_imp(ctx, dict, doc, tree);
+		pdf_load_name_tree_imp(ctx, dict, doc, tree, NULL);
 		return dict;
 	}
 	return NULL;
 }
 
 pdf_obj *
-pdf_lookup_number(fz_context *ctx, pdf_obj *node, int needle)
+pdf_lookup_number_imp(fz_context *ctx, pdf_obj *node, int needle, pdf_cycle_list *cycle_up)
 {
+	pdf_cycle_list cycle;
 	pdf_obj *kids = pdf_dict_get(ctx, node, PDF_NAME(Kids));
 	pdf_obj *nums = pdf_dict_get(ctx, node, PDF_NAME(Nums));
 
@@ -221,17 +236,9 @@ pdf_lookup_number(fz_context *ctx, pdf_obj *node, int needle)
 				l = m + 1;
 			else
 			{
-				pdf_obj *obj;
-
-				if (pdf_mark_obj(ctx, node))
+				if (pdf_cycle(ctx, &cycle, cycle_up, node))
 					break;
-				fz_try(ctx)
-					obj = pdf_lookup_number(ctx, kid, needle);
-				fz_always(ctx)
-					pdf_unmark_obj(ctx, node);
-				fz_catch(ctx)
-					fz_rethrow(ctx);
-				return obj;
+				return pdf_lookup_number_imp(ctx, kid, needle, &cycle);
 			}
 		}
 	}
@@ -266,6 +273,20 @@ pdf_lookup_number(fz_context *ctx, pdf_obj *node, int needle)
 	return NULL;
 }
 
+pdf_obj *
+pdf_lookup_number(fz_context *ctx, pdf_obj *node, int needle)
+{
+	return pdf_lookup_number_imp(ctx, node, needle, NULL);
+}
+
+static void pdf_walk_tree_imp(fz_context *ctx, pdf_obj *obj, pdf_obj *kid_name,
+			void (*arrive)(fz_context *, pdf_obj *, void *, pdf_obj **),
+			void (*leave)(fz_context *, pdf_obj *, void *),
+			void *arg,
+			pdf_obj **inherit_names,
+			pdf_obj **inherit_vals,
+			pdf_cycle_list *cycle_up);
+
 static void
 pdf_walk_tree_kid(fz_context *ctx,
 			pdf_obj *obj,
@@ -274,11 +295,13 @@ pdf_walk_tree_kid(fz_context *ctx,
 			void (*leave)(fz_context *, pdf_obj *, void *),
 			void *arg,
 			pdf_obj **inherit_names,
-			pdf_obj **inherit_vals)
+			pdf_obj **inherit_vals,
+			pdf_cycle_list *cycle_up)
 {
+	pdf_cycle_list cycle;
 	pdf_obj **new_vals = NULL;
 
-	if (obj == NULL || pdf_mark_obj(ctx, obj))
+	if (obj == NULL || pdf_cycle(ctx, &cycle, cycle_up, obj))
 		return;
 
 	fz_var(new_vals);
@@ -311,17 +334,39 @@ pdf_walk_tree_kid(fz_context *ctx,
 
 		if (arrive)
 			arrive(ctx, obj, arg, inherit_vals);
-		pdf_walk_tree(ctx, pdf_dict_get(ctx, obj, kid_name), kid_name, arrive, leave, arg, inherit_names, inherit_vals);
+		pdf_walk_tree_imp(ctx, pdf_dict_get(ctx, obj, kid_name), kid_name, arrive, leave, arg, inherit_names, inherit_vals, &cycle);
 		if (leave)
 			leave(ctx, obj, arg);
 	}
 	fz_always(ctx)
-	{
 		fz_free(ctx, new_vals);
-		pdf_unmark_obj(ctx, obj);
-	}
 	fz_catch(ctx)
 		fz_rethrow(ctx);
+}
+
+static void pdf_walk_tree_imp(fz_context *ctx, pdf_obj *obj, pdf_obj *kid_name,
+			void (*arrive)(fz_context *, pdf_obj *, void *, pdf_obj **),
+			void (*leave)(fz_context *, pdf_obj *, void *),
+			void *arg,
+			pdf_obj **inherit_names,
+			pdf_obj **inherit_vals,
+			pdf_cycle_list *cycle_up)
+{
+	pdf_cycle_list cycle;
+
+	if (obj == NULL || pdf_cycle(ctx, &cycle, cycle_up, obj))
+		return;
+
+	if (pdf_is_array(ctx, obj))
+	{
+		int i, n = pdf_array_len(ctx, obj);
+		for (i = 0; i < n; i++)
+			pdf_walk_tree_kid(ctx, pdf_array_get(ctx, obj, i), kid_name, arrive, leave, arg, inherit_names, inherit_vals, &cycle);
+	}
+	else
+	{
+		pdf_walk_tree_kid(ctx, obj, kid_name, arrive, leave, arg, inherit_names, inherit_vals, &cycle);
+	}
 }
 
 void pdf_walk_tree(fz_context *ctx, pdf_obj *obj, pdf_obj *kid_name,
@@ -331,24 +376,5 @@ void pdf_walk_tree(fz_context *ctx, pdf_obj *obj, pdf_obj *kid_name,
 			pdf_obj **inherit_names,
 			pdf_obj **inherit_vals)
 {
-	if (obj == NULL || pdf_mark_obj(ctx, obj))
-		return;
-
-	fz_try(ctx)
-	{
-		if (pdf_is_array(ctx, obj))
-		{
-			int i, n = pdf_array_len(ctx, obj);
-			for (i = 0; i < n; i++)
-				pdf_walk_tree_kid(ctx, pdf_array_get(ctx, obj, i), kid_name, arrive, leave, arg, inherit_names, inherit_vals);
-		}
-		else
-		{
-			pdf_walk_tree_kid(ctx, obj, kid_name, arrive, leave, arg, inherit_names, inherit_vals);
-		}
-	}
-	fz_always(ctx)
-		pdf_unmark_obj(ctx, obj);
-	fz_catch(ctx)
-		fz_rethrow(ctx);
+	pdf_walk_tree_imp(ctx, obj, kid_name, arrive, leave, arg, inherit_names, inherit_vals, NULL);
 }

@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 #include "draw-imp.h"
@@ -876,7 +876,6 @@ fz_convert_gel(fz_context *ctx, fz_rasterizer *rast, int eofill, const fz_irect 
 			fn = (void *)fz_get_span_color_painter(dst->n, dst->alpha, color, eop);
 		else
 			fn = (void *)fz_get_span_painter(dst->alpha, 1, 0, 255, eop);
-		assert(fn || dst->alpha == 0);
 		if (fn == NULL)
 			return;
 		fz_scan_convert_aa(ctx, gel, eofill, clip, dst, color, fn, eop);

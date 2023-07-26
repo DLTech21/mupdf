@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /* PDFWidget interface */
 
@@ -650,4 +650,21 @@ FUN(PDFWidget_layoutTextWidget)(JNIEnv *env, jobject self)
 	fz_drop_layout(ctx, layout);
 
 	return jlayout;
+}
+
+JNIEXPORT jstring JNICALL
+FUN(PDFWidget_getLabel)(JNIEnv *env, jobject self)
+{
+	fz_context *ctx = get_context(env);
+	pdf_annot *widget = from_PDFWidget_safe(env, self);
+	const char *text = NULL;
+
+	if (!ctx || !widget) return NULL;
+
+	fz_try(ctx)
+		text = pdf_annot_field_label(ctx, widget);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return (*env)->NewStringUTF(env, text);
 }

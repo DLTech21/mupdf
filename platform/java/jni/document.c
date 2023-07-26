@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 /* Document interface */
 
@@ -602,6 +602,21 @@ FUN(Document_recognize)(JNIEnv *env, jclass cls, jstring jmagic)
 		jni_rethrow(env, ctx);
 
 	return recognized;
+}
+
+JNIEXPORT jboolean JNICALL
+FUN(Document_supportsAccelerator)(JNIEnv *env, jobject self)
+{
+	fz_context *ctx = get_context(env);
+	fz_document *doc = from_Document(env, self);
+	jboolean support = JNI_FALSE;
+
+	fz_try(ctx)
+		support = fz_document_supports_accelerator(ctx, doc);
+	fz_catch(ctx)
+		jni_rethrow(env, ctx);
+
+	return support;
 }
 
 JNIEXPORT void JNICALL

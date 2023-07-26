@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 
@@ -2322,7 +2322,6 @@ fz_paint_pixmap_with_bbox(fz_pixmap * FZ_RESTRICT dst, const fz_pixmap * FZ_REST
 
 	n -= sa;
 	fn = fz_get_span_painter(da, sa, n, alpha, 0);
-	assert(fn);
 	if (fn == NULL)
 		return;
 
@@ -2369,7 +2368,6 @@ fz_paint_pixmap(fz_pixmap * FZ_RESTRICT dst, const fz_pixmap * FZ_RESTRICT src, 
 
 	n -= sa;
 	fn = fz_get_span_painter(da, sa, n, alpha, 0);
-	assert(fn);
 	if (fn == NULL)
 		return;
 
@@ -2490,7 +2488,6 @@ fz_paint_pixmap_with_overprint(fz_pixmap * FZ_RESTRICT dst, const fz_pixmap * FZ
 
 	n -= sa;
 	fn = fz_get_span_painter(da, sa, n, 255, eop);
-	assert(fn);
 	if (fn == NULL)
 		return;
 
@@ -2664,6 +2661,135 @@ intermediate_run:
 						{
 							a = FZ_EXPAND(a);
 							*ddp = FZ_BLEND(0xFF, v, a);
+							ddp++;
+						}
+					}
+					while (--len);
+					break;
+				}
+				if (eol)
+					break;
+			}
+		}
+		dp += span;
+	}
+}
+
+static inline void
+fz_paint_glyph_mask_alpha(int span, unsigned char *dp, int da, const fz_glyph *glyph, int w, int h, int skip_x, int skip_y, unsigned char alpha)
+{
+	while (h--)
+	{
+		int skip_xx, ww, len, extend;
+		const unsigned char *runp;
+		unsigned char *ddp = dp;
+		int offset = ((const int *)(glyph->data))[skip_y++];
+		if (offset >= 0)
+		{
+			int eol = 0;
+			runp = &glyph->data[offset];
+			extend = 0;
+			ww = w;
+			skip_xx = skip_x;
+			while (skip_xx)
+			{
+				int v = *runp++;
+				switch (v & 3)
+				{
+				case 0: /* Extend */
+					extend = v>>2;
+					len = 0;
+					break;
+				case 1: /* Transparent */
+					len = (v>>2) + 1 + (extend<<6);
+					extend = 0;
+					if (len > skip_xx)
+					{
+						len -= skip_xx;
+						goto transparent_run;
+					}
+					break;
+				case 2: /* Solid */
+					eol = v & 4;
+					len = (v>>3) + 1 + (extend<<5);
+					extend = 0;
+					if (len > skip_xx)
+					{
+						len -= skip_xx;
+						goto solid_run;
+					}
+					break;
+				default: /* Intermediate */
+					eol = v & 4;
+					len = (v>>3) + 1 + (extend<<5);
+					extend = 0;
+					if (len > skip_xx)
+					{
+						runp += skip_xx;
+						len -= skip_xx;
+						goto intermediate_run;
+					}
+					runp += len;
+					break;
+				}
+				if (eol)
+				{
+					ww = 0;
+					break;
+				}
+				skip_xx -= len;
+			}
+			while (ww > 0)
+			{
+				int v = *runp++;
+				switch(v & 3)
+				{
+				case 0: /* Extend */
+					extend = v>>2;
+					break;
+				case 1: /* Transparent */
+					len = (v>>2) + 1 + (extend<<6);
+					extend = 0;
+transparent_run:
+					if (len > ww)
+						len = ww;
+					ww -= len;
+					ddp += len;
+					break;
+				case 2: /* Solid */
+					eol = v & 4;
+					len = (v>>3) + 1 + (extend<<5);
+					extend = 0;
+solid_run:
+					if (len > ww)
+						len = ww;
+					ww -= len;
+					do
+					{
+						*ddp++ = alpha;
+					}
+					while (--len);
+					break;
+				default: /* Intermediate */
+					eol = v & 4;
+					len = (v>>3) + 1 + (extend<<5);
+					extend = 0;
+intermediate_run:
+					if (len > ww)
+						len = ww;
+					ww -= len;
+					do
+					{
+						int v = *ddp;
+						int a = *runp++;
+						if (v == 0)
+						{
+							*ddp++ = fz_mul255(a, alpha);
+						}
+						else
+						{
+							a = FZ_EXPAND(a);
+							*ddp = FZ_BLEND(alpha, v, a);
 							ddp++;
 						}
 					}
@@ -2893,6 +3019,9 @@ fz_paint_glyph(const unsigned char * FZ_RESTRICT colorbv, fz_pixmap * FZ_RESTRIC
 	else
 	{
 		assert(dst->alpha && dst->n == 1 && dst->colorspace == NULL && !fz_overprint_required(eop));
-		fz_paint_glyph_mask(dst->stride, dp, dst->alpha, glyph, w, h, skip_x, skip_y);
+		if (colorbv == NULL || colorbv[0] == 255)
+			fz_paint_glyph_mask(dst->stride, dp, dst->alpha, glyph, w, h, skip_x, skip_y);
+		else
+			fz_paint_glyph_mask_alpha(dst->stride, dp, dst->alpha, glyph, w, h, skip_x, skip_y, colorbv[0]);
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #define _LARGEFILE_SOURCE
 #ifndef _FILE_OFFSET_BITS
@@ -426,6 +426,7 @@ fz_write_printf(fz_context *ctx, fz_output *out, const char *fmt, ...)
 void
 fz_flush_output(fz_context *ctx, fz_output *out)
 {
+	fz_write_bits_sync(ctx, out);
 	if (out->wp > out->bp)
 	{
 		out->write(ctx, out->state, out->bp, out->wp - out->bp);
@@ -491,6 +492,12 @@ fz_write_data(fz_context *ctx, fz_output *out, const void *data_, size_t size)
 	{
 		out->write(ctx, out->state, data, size);
 	}
+}
+
+void
+fz_write_buffer(fz_context *ctx, fz_output *out, fz_buffer *buf)
+{
+	fz_write_data(ctx, out, buf->data, buf->len);
 }
 
 void
@@ -639,6 +646,51 @@ fz_write_base64_buffer(fz_context *ctx, fz_output *out, fz_buffer *buf, int newl
 }
 
 void
+fz_append_base64(fz_context *ctx, fz_buffer *out, const unsigned char *data, size_t size, int newline)
+{
+	static const char set[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t i;
+	for (i = 0; i + 3 <= size; i += 3)
+	{
+		int c = data[i];
+		int d = data[i+1];
+		int e = data[i+2];
+		if (newline && (i & 15) == 0)
+			fz_append_byte(ctx, out, '\n');
+		fz_append_byte(ctx, out, set[c>>2]);
+		fz_append_byte(ctx, out, set[((c&3)<<4)|(d>>4)]);
+		fz_append_byte(ctx, out, set[((d&15)<<2)|(e>>6)]);
+		fz_append_byte(ctx, out, set[e&63]);
+	}
+	if (size - i == 2)
+	{
+		int c = data[i];
+		int d = data[i+1];
+		fz_append_byte(ctx, out, set[c>>2]);
+		fz_append_byte(ctx, out, set[((c&3)<<4)|(d>>4)]);
+		fz_append_byte(ctx, out, set[((d&15)<<2)]);
+		fz_append_byte(ctx, out, '=');
+	}
+	else if (size - i == 1)
+	{
+		int c = data[i];
+		fz_append_byte(ctx, out, set[c>>2]);
+		fz_append_byte(ctx, out, set[((c&3)<<4)]);
+		fz_append_byte(ctx, out, '=');
+		fz_append_byte(ctx, out, '=');
+	}
+}
+
+void
+fz_append_base64_buffer(fz_context *ctx, fz_buffer *out, fz_buffer *buf, int newline)
+{
+	unsigned char *data;
+	size_t size = fz_buffer_storage(ctx, buf, &data);
+	fz_append_base64(ctx, out, data, size, newline);
+}
+
+
+void
 fz_save_buffer(fz_context *ctx, fz_buffer *buf, const char *filename)
 {
 	fz_output *out = fz_new_output_with_path(ctx, filename, 0);
@@ -664,6 +716,9 @@ void fz_write_header(fz_context *ctx, fz_band_writer *writer, int w, int h, int 
 {
 	if (writer == NULL || writer->band == NULL)
 		return;
+
+	if (w <= 0 || h <= 0 || n <= 0 || alpha < 0 || alpha > 1)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid bandwriter header dimensions/setup");
 
 	writer->w = w;
 	writer->h = h;
@@ -720,4 +775,46 @@ void fz_drop_band_writer(fz_context *ctx, fz_band_writer *writer)
 int fz_output_supports_stream(fz_context *ctx, fz_output *out)
 {
 	return out != NULL && out->as_stream != NULL;
+}
+
+void fz_write_bits(fz_context *ctx, fz_output *out, unsigned int data, int num_bits)
+{
+	while (num_bits)
+	{
+		/* How many bits will be left in the current byte after we
+		 * insert these bits? */
+		int n = 8 - num_bits - out->buffered;
+		if (n >= 0)
+		{
+			/* We can fit our data in. */
+			out->bits |= data << n;
+			out->buffered += num_bits;
+			num_bits = 0;
+		}
+		else
+		{
+			/* There are 8 - out->buffered bits left to be filled. We have
+			 * num_bits to fill it with, which is more, so we need to throw
+			 * away the bottom 'num_bits - (8 - out->buffered)' bits. That's
+			 * num_bits + out->buffered - 8 = -(8 - num_bits - out_buffered) = -n */
+			out->bits |= data >> -n;
+			data &= ~(out->bits << -n);
+			num_bits = -n;
+			out->buffered = 8;
+		}
+		if (out->buffered == 8)
+		{
+			fz_write_byte(ctx, out, out->bits);
+			out->buffered = 0;
+			out->bits = 0;
+		}
+	}
+
+}
+
+void fz_write_bits_sync(fz_context *ctx, fz_output *out)
+{
+	if (out->buffered == 0)
+		return;
+	fz_write_bits(ctx, out, 0, 8 - out->buffered);
 }

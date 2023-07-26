@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2022 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -17,8 +17,8 @@
 //
 // Alternative licensing terms are available from the licensor.
 // For commercial licensing, see <https://www.artifex.com/> or contact
-// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
-// CA 94945, U.S.A., +1(415)492-9861, for further information.
+// Artifex Software, Inc., 39 Mesa Street, Suite 108A, San Francisco,
+// CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
 #include "mupdf/pdf.h"
@@ -428,6 +428,29 @@ pdf_load_substitute_cjk_font(fz_context *ctx, pdf_font_desc *fontdesc, const cha
 	fontdesc->font->flags.cjk_lang = ros;
 }
 
+static struct { int ros, serif; const char *name; } known_cjk_fonts[] = {
+	{ FZ_ADOBE_GB, 0, "SimFang" },
+	{ FZ_ADOBE_GB, 0, "SimHei" },
+	{ FZ_ADOBE_GB, 1, "SimKai" },
+	{ FZ_ADOBE_GB, 1, "SimLi" },
+	{ FZ_ADOBE_GB, 1, "SimSun" },
+	{ FZ_ADOBE_GB, 1, "Song" },
+
+	{ FZ_ADOBE_CNS, 1, "MingLiU" },
+
+	{ FZ_ADOBE_JAPAN, 0, "Gothic" },
+	{ FZ_ADOBE_JAPAN, 1, "Mincho" },
+
+	{ FZ_ADOBE_KOREA, 1, "Batang" },
+	{ FZ_ADOBE_KOREA, 0, "Gulim" },
+	{ FZ_ADOBE_KOREA, 0, "Dotum" },
+};
+
+static int match_font_name(const char *s, const char *ref)
+{
+	return !!strstr(s, ref);
+}
+
 static void
 pdf_load_system_font(fz_context *ctx, pdf_font_desc *fontdesc, const char *fontname, const char *collection)
 {
@@ -464,8 +487,21 @@ pdf_load_system_font(fz_context *ctx, pdf_font_desc *fontdesc, const char *fontn
 			pdf_load_substitute_cjk_font(ctx, fontdesc, fontname, FZ_ADOBE_KOREA, serif);
 		else
 		{
+			size_t i;
 			if (strcmp(collection, "Adobe-Identity") != 0)
 				fz_warn(ctx, "unknown cid collection: %s", collection);
+
+			// Recognize common CJK fonts when using Identity or other non-CJK CMap
+			for (i = 0; i < nelem(known_cjk_fonts); ++i)
+			{
+				if (match_font_name(fontname, known_cjk_fonts[i].name))
+				{
+					pdf_load_substitute_cjk_font(ctx, fontdesc, fontname,
+						known_cjk_fonts[i].ros, known_cjk_fonts[i].serif);
+					return;
+				}
+			}
+
 			pdf_load_substitute_font(ctx, fontdesc, fontname, mono, serif, bold, italic);
 		}
 	}
@@ -475,14 +511,63 @@ pdf_load_system_font(fz_context *ctx, pdf_font_desc *fontdesc, const char *fontn
 	}
 }
 
+#define TTF_U16(p) ((uint16_t) ((p)[0]<<8) | ((p)[1]))
+#define TTF_U32(p) ((uint32_t) ((p)[0]<<24) | ((p)[1]<<16) | ((p)[2]<<8) | ((p)[3]))
+
+static fz_buffer *
+pdf_extract_cff_subtable(fz_context *ctx, unsigned char *data, size_t size)
+{
+	size_t num_tables = TTF_U16(data + 4);
+	size_t i;
+
+	if (12 + num_tables * 16 > size)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "invalid TTF header");
+
+	for (i = 0; i < num_tables; ++i)
+	{
+		unsigned char *record = data + 12 + i * 16;
+		if (!memcmp("CFF ", record, 4))
+		{
+			uint64_t offset = TTF_U32(record + 8);
+			uint64_t length = TTF_U32(record + 12);
+			uint64_t end = offset + length;
+			if (end > size)
+				fz_throw(ctx, FZ_ERROR_GENERIC, "invalid TTF subtable offset/length");
+			return fz_new_buffer_from_copied_data(ctx, data + offset, length);
+		}
+	}
+
+	return NULL;
+}
+
 static void
 pdf_load_embedded_font(fz_context *ctx, pdf_document *doc, pdf_font_desc *fontdesc, const char *fontname, pdf_obj *stmref)
 {
 	fz_buffer *buf;
+	unsigned char *data;
+	size_t size;
+
+	fz_var(buf);
 
 	buf = pdf_load_stream(ctx, stmref);
+
 	fz_try(ctx)
+	{
+		/* Extract CFF subtable for OpenType fonts: */
+		size = fz_buffer_storage(ctx, buf, &data);
+		if (size > 12) {
+			if (!memcmp("OTTO", data, 4)) {
+				fz_buffer *cff = pdf_extract_cff_subtable(ctx, data, size);
+				if (cff)
+				{
+					fz_drop_buffer(ctx, buf);
+					buf = cff;
+				}
+			}
+		}
+
 		fontdesc->font = fz_new_font_from_buffer(ctx, fontname, buf, 0, 1);
+	}
 	fz_always(ctx)
 		fz_drop_buffer(ctx, buf);
 	fz_catch(ctx)
@@ -1404,11 +1489,13 @@ pdf_load_font(fz_context *ctx, pdf_document *doc, pdf_obj *rdb, pdf_obj *dict)
 	pdf_font_desc *fontdesc = NULL;
 	int type3 = 0;
 
-	if (pdf_obj_marked(ctx, dict))
-		fz_throw(ctx, FZ_ERROR_SYNTAX, "Recursive Type3 font definition.");
-
 	if ((fontdesc = pdf_find_item(ctx, pdf_drop_font_imp, dict)) != NULL)
 	{
+		if (fontdesc->t3loading)
+		{
+			pdf_drop_font(ctx, fontdesc);
+			fz_throw(ctx, FZ_ERROR_GENERIC, "recursive type3 font");
+		}
 		return fontdesc;
 	}
 
@@ -1446,20 +1533,28 @@ pdf_load_font(fz_context *ctx, pdf_document *doc, pdf_obj *rdb, pdf_obj *dict)
 		fontdesc = pdf_load_simple_font(ctx, doc, dict);
 	}
 
-	(void)pdf_mark_obj(ctx, dict);
 	fz_try(ctx)
 	{
 		/* Create glyph width table for stretching substitute fonts and text extraction. */
 		pdf_make_width_table(ctx, fontdesc);
 
+		pdf_store_item(ctx, dict, fontdesc, fontdesc->size);
+
 		/* Load CharProcs */
 		if (type3)
-			pdf_load_type3_glyphs(ctx, doc, fontdesc);
-
-		pdf_store_item(ctx, dict, fontdesc, fontdesc->size);
+		{
+			fontdesc->t3loading = 1;
+			fz_try(ctx)
+				pdf_load_type3_glyphs(ctx, doc, fontdesc);
+			fz_always(ctx)
+				fontdesc->t3loading = 0;
+			fz_catch(ctx)
+			{
+				pdf_remove_item(ctx, fontdesc->storable.drop, dict);
+				fz_rethrow(ctx);
+			}
+		}
 	}
-	fz_always(ctx)
-		pdf_unmark_obj(ctx, dict);
 	fz_catch(ctx)
 	{
 		pdf_drop_font(ctx, fontdesc);
