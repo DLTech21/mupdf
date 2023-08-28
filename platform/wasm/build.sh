@@ -2,7 +2,7 @@
 
 make -j4 -C ../.. generate
 
-source /opt/emsdk/emsdk_env.sh
+source ~/.bash_profile
 
 echo Building generated files:
 make -j4 -C ../.. generate
@@ -10,7 +10,7 @@ make -j4 -C ../.. generate
 echo Building library:
 make -j4 -C ../.. \
 	OS=wasm build=release \
-	XCFLAGS="-DTOFU -DTOFU_CJK -DFZ_ENABLE_SVG=0 -DFZ_ENABLE_HTML=0 -DFZ_ENABLE_EPUB=0 -DFZ_ENABLE_JS=0" \
+	XCFLAGS="-DFZ_ENABLE_SVG=0 -DFZ_ENABLE_HTML=0 -DFZ_ENABLE_EPUB=0 -DFZ_ENABLE_JS=0" \
 	libs
 
 echo
