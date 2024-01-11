@@ -552,7 +552,7 @@ shared-clean:
 	rm -rf build/shared-*
 
 android: generate
-	/Users/donal/Documents/android-ndk-r13b/ndk-build -j8 \
+	/Users/donal/Library/Android/sdk/ndk-bundle/ndk-build -j8 \
 		APP_BUILD_SCRIPT=platform/java/Android.mk \
 		APP_PROJECT_PATH=build/android \
 		APP_PLATFORM=android-16 \
