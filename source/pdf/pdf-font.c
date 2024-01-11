@@ -435,7 +435,7 @@ static struct { int ros, serif; const char *name; } known_cjk_fonts[] = {
 	{ FZ_ADOBE_GB, 1, "SimLi" },
 	{ FZ_ADOBE_GB, 1, "SimSun" },
 	{ FZ_ADOBE_GB, 1, "Song" },
-
+    { FZ_ADOBE_GB, 1, "KaiTi" },
 	{ FZ_ADOBE_CNS, 1, "MingLiU" },
 
 	{ FZ_ADOBE_JAPAN, 0, "Gothic" },
@@ -554,17 +554,17 @@ pdf_load_embedded_font(fz_context *ctx, pdf_document *doc, pdf_font_desc *fontde
 	fz_try(ctx)
 	{
 		/* Extract CFF subtable for OpenType fonts: */
-		size = fz_buffer_storage(ctx, buf, &data);
-		if (size > 12) {
-			if (!memcmp("OTTO", data, 4)) {
-				fz_buffer *cff = pdf_extract_cff_subtable(ctx, data, size);
-				if (cff)
-				{
-					fz_drop_buffer(ctx, buf);
-					buf = cff;
-				}
-			}
-		}
+//		size = fz_buffer_storage(ctx, buf, &data);
+//		if (size > 12) {
+//			if (!memcmp("OTTO", data, 4)) {
+//				fz_buffer *cff = pdf_extract_cff_subtable(ctx, data, size);
+//				if (cff)
+//				{
+//					fz_drop_buffer(ctx, buf);
+//					buf = cff;
+//				}
+//			}
+//		}
 
 		fontdesc->font = fz_new_font_from_buffer(ctx, fontname, buf, 0, 1);
 	}

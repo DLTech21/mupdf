@@ -552,11 +552,11 @@ shared-clean:
 	rm -rf build/shared-*
 
 android: generate
-	ndk-build -j8 \
+	/Users/donal/Documents/android-ndk-r13b/ndk-build -j8 \
 		APP_BUILD_SCRIPT=platform/java/Android.mk \
 		APP_PROJECT_PATH=build/android \
 		APP_PLATFORM=android-16 \
-		APP_ABI=x86 \
+		APP_ABI=armeabi-v7a \
 		APP_OPTIM=$(build)
 
 c++: c++-$(build)

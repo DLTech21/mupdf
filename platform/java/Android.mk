@@ -202,13 +202,13 @@ include $(BUILD_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := ssl
-LOCAL_SRC_FILES := pre-compiled-x86/libssl.a
+LOCAL_SRC_FILES := pre-compiled-armv7/libssl.a
 $(warning $(LOCAL_SRC_FILES))
 include $(PREBUILT_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := crypto
-LOCAL_SRC_FILES := pre-compiled-x86/libcrypto.a
+LOCAL_SRC_FILES := pre-compiled-armv7/libcrypto.a
 $(warning $(LOCAL_SRC_FILES))
 include $(PREBUILT_STATIC_LIBRARY)
 

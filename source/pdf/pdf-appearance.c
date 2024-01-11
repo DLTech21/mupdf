@@ -3112,8 +3112,8 @@ retry_after_repair:
 			if (ft == PDF_NAME(Sig))
 			{
 				/* We cannot synthesise an appearance for a signed Sig, so don't even try. */
-				if (pdf_signature_is_signed(ctx, annot->page->doc, annot->obj))
-					break;
+//				if (pdf_signature_is_signed(ctx, annot->page->doc, annot->obj))
+//					break;
 			}
 		}
 
