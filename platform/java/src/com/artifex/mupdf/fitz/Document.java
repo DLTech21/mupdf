@@ -22,6 +22,8 @@
 
 package com.artifex.mupdf.fitz;
 
+import android.graphics.RectF;
+
 public class Document
 {
 	static {
@@ -244,4 +246,10 @@ public class Document
 	public boolean isPDF() {
 		return false;
 	}
+
+	public native int getAllSignature(int[] signNum, byte[] signers, int[] pageNo, int[] valids, float[] rect);
+
+	public native RectF[] getWidgetAreas(int page, float[] rect);
+
+	public native int getSignatureInformationByRect(int page, float[] rect, byte[] signers, byte[] signTime, int[] hasTs, byte[] tsTime, int[] valids, byte[] issuer, byte[] startTime, byte[] endTime, byte[] serial, byte[] alg);
 }
