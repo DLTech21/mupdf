@@ -3114,6 +3114,8 @@ retry_after_repair:
 				/* We cannot synthesise an appearance for a signed Sig, so don't even try. */
 //				if (pdf_signature_is_signed(ctx, annot->page->doc, annot->obj))
 //					break;
+                pdf_end_operation(ctx, annot->page->doc);
+                break;
 			}
 		}
 
