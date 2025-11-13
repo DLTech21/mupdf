@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2024 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -77,13 +77,13 @@ abstract public class Device
 	abstract public void endMask();
 	abstract public void beginGroup(Rect area, ColorSpace cs, boolean isolated, boolean knockout, int blendmode, float alpha);
 	abstract public void endGroup();
-	abstract public int beginTile(Rect area, Rect view, float xstep, float ystep, Matrix ctm, int id);
+	abstract public int beginTile(Rect area, Rect view, float xstep, float ystep, Matrix ctm, int id, int doc_id);
 	abstract public void endTile();
 	abstract public void renderFlags(int set, int clear);
 	abstract public void setDefaultColorSpaces(DefaultColorSpaces dcs);
 	abstract public void beginLayer(String name);
 	abstract public void endLayer();
-	abstract public void beginStructure(int standard, String raw, int uid);
+	abstract public void beginStructure(int standard, String raw, int idx);
 	abstract public void endStructure();
 	abstract public void beginMetatext(int meta, String text);
 	abstract public void endMetatext();

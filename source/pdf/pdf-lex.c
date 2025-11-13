@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2024 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -159,10 +159,10 @@ static float acrobat_compatible_atof(char *s)
 }
 
 /* Fast but inaccurate atoi. */
-static int fast_atoi(char *s)
+static int64_t fast_atoi(char *s)
 {
 	int neg = 0;
-	int i = 0;
+	int64_t i = 0;
 
 	while (*s == '-')
 	{
@@ -319,8 +319,9 @@ lex_name(fz_context *ctx, fz_stream *f, pdf_lexbuf *lb)
 					hex[i] = lex_byte(ctx, f) - 'A' + 10;
 					break;
 				default:
-				case EOF:
 					goto illegal;
+				case EOF:
+					goto illegal_eof;
 				}
 			}
 			if (s) *s++ = (hex[0] << 4) + hex[1];
@@ -328,6 +329,7 @@ lex_name(fz_context *ctx, fz_stream *f, pdf_lexbuf *lb)
 illegal:
 			if (i == 1)
 				fz_unread_byte(ctx, f);
+illegal_eof:
 			if (s) *s++ = '#';
 			continue;
 		}
@@ -431,6 +433,17 @@ lex_string(fz_context *ctx, fz_stream *f, pdf_lexbuf *lb)
 			default:
 				*s++ = c;
 			}
+			break;
+		/* Bug 708256: PDF 32000-1 says that any occurence of \n, \r, or \r\n in a
+		 * (unless escaped with a '\') should be interpreted as a single 0x0a byte. */
+		case '\n':
+			*s++ = 0x0a;
+			break;
+		case '\r':
+			*s++ = 0x0a;
+			c = lex_byte(ctx, f);
+			if ((c != '\n') && (c != EOF))
+				fz_unread_byte(ctx, f);
 			break;
 		default:
 			*s++ = c;

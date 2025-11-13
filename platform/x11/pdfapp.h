@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -49,6 +49,7 @@ enum { QUERY_NO, QUERY_YES };
 extern void winwarn(pdfapp_t*, char *s);
 extern void winerror(pdfapp_t*, char *s);
 extern void wintitle(pdfapp_t*, char *title);
+extern int winisresolutionacceptable(pdfapp_t*, fz_matrix ctm);
 extern void winresize(pdfapp_t*, int w, int h);
 extern void winrepaint(pdfapp_t*);
 extern void winrepaintsearch(pdfapp_t*);
@@ -205,5 +206,7 @@ void pdfapp_postblit(pdfapp_t *app);
 
 void pdfapp_warn(pdfapp_t *app, const char *fmt, ...);
 void pdfapp_error(pdfapp_t *app, char *msg);
+
+void pdfapp_load_profile(pdfapp_t *app, char *profile_name);
 
 #endif

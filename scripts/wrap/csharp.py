@@ -10,6 +10,7 @@ from . import util
 import jlib
 
 import textwrap
+import os
 
 
 def make_outparam_helper_csharp(
@@ -65,56 +66,70 @@ def make_outparam_helper_csharp(
                 )
         return
 
+    omit = None
+
+    num_return_values = 0 if return_void else 1
     # We don't attempt to generate wrappers for fns that take or return
     # 'unsigned char*' - swig does not treat these as zero-terminated strings,
     # and they are generally binary data so cannot be handled generically.
     #
     if parse.is_pointer_to(cursor.result_type, 'unsigned char'):
-        jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because it returns unsigned char*.', 1)
-        return
-    for arg in parse.get_args( tu, cursor):
-        if parse.is_pointer_to(arg.cursor.type, 'unsigned char'):
-            jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has unsigned char* arg.', 1)
-            return
-        if parse.is_pointer_to_pointer_to(arg.cursor.type, 'unsigned char'):
-            jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has unsigned char** arg.', 1)
-            return
-        if arg.cursor.type.get_array_size() >= 0:
-            jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has array arg.', 1)
-            return
-        if arg.cursor.type.kind == state.clang.cindex.TypeKind.POINTER:
-            pointee = state.get_name_canonical( arg.cursor.type.get_pointee())
-            if pointee.kind == state.clang.cindex.TypeKind.ENUM:
-                jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has enum out-param arg.', 1)
-                return
-            if pointee.kind == state.clang.cindex.TypeKind.FUNCTIONPROTO:
-                jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has fn-ptr arg.', 1)
-                return
-            if pointee.is_const_qualified():
-                # Not an out-param.
-                jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has pointer-to-const arg.', 1)
-                return
-            if arg.cursor.type.get_pointee().spelling == 'FILE':
-                jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has FILE* arg.', 1)
-                return
-            if pointee.spelling == 'void':
-                jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because has void* arg.', 1)
-                return
+        omit = f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because it returns unsigned char*.'
 
-    num_return_values = 0 if return_void else 1
-    for arg in parse.get_args( tu, cursor):
-        if arg.out_param:
-            num_return_values += 1
-    assert num_return_values
+    elif parse.is_pointer_to(cursor.result_type, 'void'):
+        omit = 'Cannot generate C# out-param wrapper for {cursor.mangled_name} because it returns void*, which is not valid in C# tuple.'
 
-    if num_return_values > 7:
+    else:
+        for arg in parse.get_args( tu, cursor):
+            if arg.out_param:
+                num_return_values += 1
+
+            if parse.is_pointer_to(arg.cursor.type, 'unsigned char'):
+                omit = f'has unsigned char* arg.'
+                break
+            if parse.is_pointer_to_pointer_to(arg.cursor.type, 'unsigned char'):
+                omit = f'has unsigned char** arg.'
+                break
+            if arg.cursor.type.get_array_size() >= 0:
+                omit = f'has array arg.'
+                break
+            if arg.cursor.type.kind == state.clang.cindex.TypeKind.POINTER:
+                pointee = state.get_name_canonical( arg.cursor.type.get_pointee())
+                if pointee.kind == state.clang.cindex.TypeKind.ENUM:
+                    omit = f'has enum out-param arg.'
+                    break
+                if pointee.kind == state.clang.cindex.TypeKind.FUNCTIONPROTO:
+                    omit = 'has fn-ptr arg.'
+                    break
+                if pointee.is_const_qualified():
+                    # Not an out-param.
+                    omit = f'has pointer-to-const arg.'
+                    break
+                if arg.cursor.type.get_pointee().spelling == 'FILE':
+                    omit = f'has FILE* arg.'
+                    break
+                if pointee.spelling == 'void':
+                    omit = f'has void* arg.'
+                    break
+
+    if not omit and num_return_values > 7:
         # On linux, mono-csc can fail with:
         #   System.NotImplementedException: tuples > 7
         #
-        jlib.log(f'Cannot generate C# out-param wrapper for {cursor.mangled_name} because would require > 7-tuple.')
+        omit = f'would require > 7-tuple.'
+
+    if omit:
+        message = f'Omitting C# out-param wrapper for {cursor.mangled_name}() because {omit}'
+        jlib.log(message, level=1, nv=0)
+        write(f'\n')
+        write(f'/*\n')
+        write(f'{message}\n')
+        write(f'*/\n')
+        write(f'\n')
         return
 
     # Write C# wrapper.
+    assert num_return_values
     arg0, _ = parse.get_first_arg( tu, cursor)
     if not arg0.alt:
         return
@@ -141,6 +156,13 @@ def make_outparam_helper_csharp(
             elif text == 'int64_t':         text = 'long'
             elif text == 'size_t':          text = 'ulong'
             elif text == 'unsigned int':    text = 'uint'
+            elif text.startswith('enum '):
+                # This is primarily for enum pdf_zugferd_profile; C# does not
+                # like `enum` prefix, and we need to specify namespace name
+                # `mupdf`.
+                text = text[5:]
+                if text.startswith('pdf_') or text.startswith('fz_'):
+                    text = f'{rename.namespace()}.{text}'
             write(f'{text}')
 
     # Generate the returned tuple.
@@ -156,7 +178,7 @@ def make_outparam_helper_csharp(
         base_type_cursor, base_typename, extras = parse.get_extras( tu, cursor.result_type)
         if extras:
             if extras.opaque:
-                # E.g. we don't have access to defintion of fz_separation,
+                # E.g. we don't have access to definition of fz_separation,
                 # but it is marked in classextras with opaque=true, so
                 # there will be a wrapper class.
                 return_alt = base_type_cursor
@@ -270,3 +292,48 @@ def make_outparam_helper_csharp(
     write(';\n')
     write(f'    }}\n')
     write(f'}}\n')
+
+
+def csharp_settings(build_dirs):
+    '''
+    Returns (csc, mono, mupdf_cs).
+
+    csc: C# compiler.
+    mono: C# interpreter ("" on Windows).
+    mupdf_cs: MuPDF C# code.
+
+    `mupdf_cs` will be None if `build_dirs` is false.
+
+    E.g. on Windows `csc` can be: C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/Roslyn/csc.exe
+    '''
+    # On linux requires:
+    #   sudo apt install mono-devel
+    #
+    # OpenBSD:
+    #   pkg_add mono
+    # but we get runtime error when exiting:
+    #   mono:build/shared-release/libmupdfcpp.so: undefined symbol '_ZdlPv'
+    # which might be because of mixing gcc and clang?
+    #
+    if state.state_.windows:
+        import wdev
+        vs = wdev.WindowsVS()
+        jlib.log('{vs.description_ml()=}')
+        csc = vs.csc
+        jlib.log('{csc=}')
+        assert csc, f'Unable to find csc.exe'
+        mono = ''
+    else:
+        mono = 'mono'
+        if state.state_.linux:
+            csc = 'mono-csc'
+        elif state.state_.openbsd:
+            csc = 'csc'
+        else:
+            assert 0, f'Do not know where to find mono. {platform.platform()=}'
+
+    if build_dirs:
+        mupdf_cs = os.path.relpath(f'{build_dirs.dir_so}/mupdf.cs')
+    else:
+        mupdf_cs = None
+    return csc, mono, mupdf_cs

@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -21,7 +21,7 @@
 // CA 94129, USA, for further information.
 
 #include "mupdf/fitz.h"
-#include "mupdf/pdf.h"
+#include "pdf-imp.h"
 
 #include <string.h>
 
@@ -36,17 +36,47 @@ struct entry
 	int64_t stm_len;
 };
 
-static void add_root(fz_context *ctx, pdf_obj *obj, pdf_obj ***roots, int *num_roots, int *max_roots)
+typedef struct
 {
-	if (*num_roots == *max_roots)
+	int max;
+	int len;
+	pdf_obj **roots;
+} pdf_root_list;
+
+static void
+add_root(fz_context *ctx, pdf_root_list *roots, pdf_obj *obj)
+{
+	if (roots->max == roots->len)
 	{
-		int new_max_roots = *max_roots * 2;
+		int new_max_roots = roots->max * 2;
 		if (new_max_roots == 0)
 			new_max_roots = 4;
-		*roots = fz_realloc_array(ctx, *roots, new_max_roots, pdf_obj*);
-		*max_roots = new_max_roots;
+		roots->roots = fz_realloc(ctx, roots->roots, new_max_roots * sizeof(roots->roots[0]));
+		roots->max = new_max_roots;
 	}
-	(*roots)[(*num_roots)++] = pdf_keep_obj(ctx, obj);
+	roots->roots[roots->len] = pdf_keep_obj(ctx, obj);
+	roots->len++;
+}
+
+static pdf_root_list *
+fz_new_root_list(fz_context *ctx)
+{
+	return fz_malloc_struct(ctx, pdf_root_list);
+}
+
+static void
+pdf_drop_root_list(fz_context *ctx, pdf_root_list *roots)
+{
+	int i, n;
+
+	if (roots == NULL)
+		return;
+
+	n = roots->len;
+	for (i = 0; i < n; i++)
+		pdf_drop_obj(ctx, roots->roots[i]);
+	fz_free(ctx, roots->roots);
+	fz_free(ctx, roots);
 }
 
 int
@@ -70,7 +100,7 @@ pdf_repair_obj(fz_context *ctx, pdf_document *doc, pdf_lexbuf *buf, int64_t *stm
 
 	*tmpofs = fz_tell(ctx, file);
 	if (*tmpofs < 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot tell in file");
+		fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot tell in file");
 
 	/* On entry to this function, we know that we've just seen
 	 * '<int> <int> obj'. We expect the next thing we see to be a
@@ -93,10 +123,12 @@ pdf_repair_obj(fz_context *ctx, pdf_document *doc, pdf_lexbuf *buf, int64_t *stm
 		fz_catch(ctx)
 		{
 			fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+			fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
 			/* Don't let a broken object at EOF overwrite a good one */
 			if (file->eof)
 				fz_rethrow(ctx);
 			/* Silently swallow the error */
+			fz_report_error(ctx);
 			dict = pdf_new_dict(ctx, doc, 2);
 		}
 
@@ -161,7 +193,7 @@ pdf_repair_obj(fz_context *ctx, pdf_document *doc, pdf_lexbuf *buf, int64_t *stm
 	{
 		*tmpofs = fz_tell(ctx, file);
 		if (*tmpofs < 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "cannot tell in file");
+			fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot tell in file");
 		tok = pdf_lex(ctx, file, buf);
 	}
 
@@ -176,7 +208,7 @@ pdf_repair_obj(fz_context *ctx, pdf_document *doc, pdf_lexbuf *buf, int64_t *stm
 
 		*stmofsp = fz_tell(ctx, file);
 		if (*stmofsp < 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "cannot seek in file");
+			fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot tell in file");
 
 		if (stm_len > 0)
 		{
@@ -188,6 +220,8 @@ pdf_repair_obj(fz_context *ctx, pdf_document *doc, pdf_lexbuf *buf, int64_t *stm
 			fz_catch(ctx)
 			{
 				fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+				fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+				fz_report_error(ctx);
 				fz_warn(ctx, "cannot find endstream token, falling back to scanning");
 			}
 			if (tok == PDF_TOK_ENDSTREAM)
@@ -212,7 +246,7 @@ pdf_repair_obj(fz_context *ctx, pdf_document *doc, pdf_lexbuf *buf, int64_t *stm
 atobjend:
 		*tmpofs = fz_tell(ctx, file);
 		if (*tmpofs < 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "cannot tell in file");
+			fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot tell in file");
 		tok = pdf_lex(ctx, file, buf);
 		if (tok != PDF_TOK_ENDOBJ)
 			fz_warn(ctx, "object missing 'endobj' token");
@@ -221,11 +255,32 @@ atobjend:
 			/* Read another token as we always return the next one */
 			*tmpofs = fz_tell(ctx, file);
 			if (*tmpofs < 0)
-				fz_throw(ctx, FZ_ERROR_GENERIC, "cannot tell in file");
+				fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot tell in file");
 			tok = pdf_lex(ctx, file, buf);
 		}
 	}
 	return tok;
+}
+
+static int64_t
+entry_offset(fz_context *ctx, pdf_document *doc, int num)
+{
+	pdf_xref_entry *entry = pdf_get_populating_xref_entry(ctx, doc, num);
+
+	if (entry->type == 0 || entry->type == 'f')
+		return 0;
+	if (entry->type == 'n')
+		return entry->ofs;
+	assert(entry->type == 'o');
+
+	/* It must be in a stream. Return the entry of that stream. */
+	entry = pdf_get_populating_xref_entry(ctx, doc, entry->ofs);
+	/* If it's NOT in a stream, then we'll invalidate this entry in a moment.
+	 * For now, just return an illegal offset. */
+	if (entry->type != 'n')
+		return -1;
+
+	return entry->ofs;
 }
 
 static void
@@ -254,10 +309,11 @@ pdf_repair_obj_stm(fz_context *ctx, pdf_document *doc, int stm_num)
 		for (i = 0; i < count; i++)
 		{
 			pdf_xref_entry *entry;
+			int replace;
 
 			tok = pdf_lex(ctx, stm, &buf);
 			if (tok != PDF_TOK_INT)
-				fz_throw(ctx, FZ_ERROR_GENERIC, "corrupt object stream (%d 0 R)", stm_num);
+				fz_throw(ctx, FZ_ERROR_FORMAT, "corrupt object stream (%d 0 R)", stm_num);
 
 			n = buf.i;
 			if (n < 0)
@@ -265,24 +321,49 @@ pdf_repair_obj_stm(fz_context *ctx, pdf_document *doc, int stm_num)
 				fz_warn(ctx, "ignoring object with invalid object number (%d %d R)", n, i);
 				continue;
 			}
-			else if (n >= pdf_xref_len(ctx, doc))
+			else if (n >= PDF_MAX_OBJECT_NUMBER)
 			{
 				fz_warn(ctx, "ignoring object with invalid object number (%d %d R)", n, i);
 				continue;
 			}
 
 			entry = pdf_get_populating_xref_entry(ctx, doc, n);
-			entry->ofs = stm_num;
-			entry->gen = i;
-			entry->num = n;
-			entry->stm_ofs = 0;
-			pdf_drop_obj(ctx, entry->obj);
-			entry->obj = NULL;
-			entry->type = 'o';
+
+			/* Bug 708286: Do not allow an object from an ObjStm to override an object
+			 * that isn't in an ObjStm that we've already read, that occurs after it
+			 * in the file. */
+			replace = 1;
+			if (entry->type != 0 && entry->type != 'f')
+			{
+				int64_t existing_entry_offset = entry_offset(ctx, doc, n);
+
+				if (existing_entry_offset < 0)
+				{
+					/* The existing entry is invalid. Anything must be better than that! */
+				}
+				else
+				{
+					int64_t this_entry_offset = entry_offset(ctx, doc, stm_num);
+
+					if (existing_entry_offset > this_entry_offset)
+						replace = 0;
+				}
+			}
+
+			if (replace)
+			{
+				entry->ofs = stm_num;
+				entry->gen = i;
+				entry->num = n;
+				entry->stm_ofs = 0;
+				pdf_drop_obj(ctx, entry->obj);
+				entry->obj = NULL;
+				entry->type = 'o';
+			}
 
 			tok = pdf_lex(ctx, stm, &buf);
 			if (tok != PDF_TOK_INT)
-				fz_throw(ctx, FZ_ERROR_GENERIC, "corrupt object stream (%d 0 R)", stm_num);
+				fz_throw(ctx, FZ_ERROR_FORMAT, "corrupt object stream (%d 0 R)", stm_num);
 		}
 	}
 	fz_always(ctx)
@@ -322,16 +403,16 @@ static int is_white(int c)
 	return c == '\x00' || c == '\x09' || c == '\x0a' || c == '\x0c' || c == '\x0d' || c == '\x20';
 }
 
-void
-pdf_repair_xref(fz_context *ctx, pdf_document *doc)
+static pdf_root_list *
+pdf_repair_xref_base(fz_context *ctx, pdf_document *doc)
 {
 	pdf_obj *dict, *obj = NULL;
 	pdf_obj *length;
 
 	pdf_obj *encrypt = NULL;
 	pdf_obj *id = NULL;
-	pdf_obj **roots = NULL;
 	pdf_obj *info = NULL;
+	pdf_root_list *roots = NULL;
 
 	struct entry *list = NULL;
 	int listlen;
@@ -348,27 +429,27 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 	size_t j, n;
 	int c;
 	pdf_lexbuf *buf = &doc->lexbuf.base;
-	int num_roots = 0;
-	int max_roots = 0;
 
 	fz_var(encrypt);
 	fz_var(id);
-	fz_var(roots);
-	fz_var(num_roots);
-	fz_var(max_roots);
 	fz_var(info);
 	fz_var(list);
 	fz_var(obj);
+	fz_var(roots);
 
-	fz_warn(ctx, "repairing PDF document");
+	if (!doc->is_fdf)
+		fz_warn(ctx, "repairing PDF document");
 
 	if (doc->repair_attempted)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Repair failed already - not trying again");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "Repair failed already - not trying again");
+
+	doc->bias = 0; // reset bias!
+
 	doc->repair_attempted = 1;
 	doc->repair_in_progress = 1;
 
 	pdf_drop_page_tree_internal(ctx, doc);
-	doc->page_tree_broken = 0;
+	doc->use_page_tree_map = 1;
 	pdf_forget_xref(ctx, doc);
 
 	fz_seek(ctx, doc->file, 0, 0);
@@ -380,15 +461,17 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 		listcap = 1024;
 		list = fz_malloc_array(ctx, listcap, struct entry);
 
+		roots = fz_new_root_list(ctx);
+
 		/* look for '%PDF' version marker within first kilobyte of file */
 		n = fz_read(ctx, doc->file, (unsigned char *)buf->scratch, fz_minz(buf->size, 1024));
 
 		fz_seek(ctx, doc->file, 0, 0);
-		if (n >= 4)
+		if (n >= 5)
 		{
-			for (j = 0; j < n - 4; j++)
+			for (j = 0; j < n - 5; j++)
 			{
-				if (memcmp(&buf->scratch[j], "%PDF", 4) == 0)
+				if (memcmp(&buf->scratch[j], "%PDF-", 5) == 0 || memcmp(&buf->scratch[j], "%FDF-", 5) == 0)
 				{
 					fz_seek(ctx, doc->file, (int64_t)(j + 8), 0); /* skip "%PDF-X.Y" */
 					break;
@@ -401,19 +484,22 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 		c = fz_read_byte(ctx, doc->file);
 		while (c >= 0 && (c == ' ' || c == '%'))
 			c = fz_read_byte(ctx, doc->file);
-		fz_unread_byte(ctx, doc->file);
+		if (c != EOF)
+			fz_unread_byte(ctx, doc->file);
 
 		while (1)
 		{
 			tmpofs = fz_tell(ctx, doc->file);
 			if (tmpofs < 0)
-				fz_throw(ctx, FZ_ERROR_GENERIC, "cannot tell in file");
+				fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot tell in file");
 
 			fz_try(ctx)
 				tok = pdf_lex_no_string(ctx, doc->file, buf);
 			fz_catch(ctx)
 			{
 				fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+				fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+				fz_report_error(ctx);
 				fz_warn(ctx, "skipping ahead to next token");
 				do
 					c = fz_read_byte(ctx, doc->file);
@@ -453,7 +539,7 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 					stm_ofs = 0;
 					tok = pdf_repair_obj(ctx, doc, buf, &stm_ofs, &stm_len, &encrypt, &id, NULL, &tmpofs, &root);
 					if (root)
-						add_root(ctx, root, &roots, &num_roots, &max_roots);
+						add_root(ctx, roots, root);
 				}
 				fz_always(ctx)
 				{
@@ -461,12 +547,19 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 				}
 				fz_catch(ctx)
 				{
-					fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+					int errcode = fz_caught(ctx);
 					/* If we haven't seen a root yet, there is nothing
 					 * we can do, but give up. Otherwise, we'll make
 					 * do. */
-					if (!roots)
+					if (roots->len == 0 ||
+						errcode == FZ_ERROR_TRYLATER ||
+						errcode == FZ_ERROR_SYSTEM)
+					{
+						pdf_drop_root_list(ctx, roots);
+						roots = NULL;
 						fz_rethrow(ctx);
+					}
+					fz_report_error(ctx);
 					fz_warn(ctx, "cannot parse object (%d %d R) - ignoring rest of file", num, gen);
 					break;
 				}
@@ -512,10 +605,12 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 				fz_catch(ctx)
 				{
 					fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+					fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
 					/* If this was the real trailer dict
 					 * it was broken, in which case we are
 					 * in trouble. Keep going though in
 					 * case this was just a bogus dict. */
+					fz_report_error(ctx);
 					continue;
 				}
 
@@ -537,7 +632,7 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 
 					dictobj = pdf_dict_get(ctx, dict, PDF_NAME(Root));
 					if (dictobj)
-						add_root(ctx, dictobj, &roots, &num_roots, &max_roots);
+						add_root(ctx, roots, dictobj);
 
 					dictobj = pdf_dict_get(ctx, dict, PDF_NAME(Info));
 					if (dictobj)
@@ -565,7 +660,7 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 		}
 
 		if (listlen == 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "no objects found");
+			fz_throw(ctx, FZ_ERROR_FORMAT, "no objects found");
 
 		/* make xref reasonable */
 
@@ -648,23 +743,8 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 		pdf_drop_obj(ctx, obj);
 		obj = NULL;
 
-		obj = pdf_new_int(ctx, maxnum + 1);
-		pdf_dict_put(ctx, pdf_trailer(ctx, doc), PDF_NAME(Size), obj);
-		pdf_drop_obj(ctx, obj);
-		obj = NULL;
+		pdf_dict_put_int(ctx, pdf_trailer(ctx, doc), PDF_NAME(Size), maxnum + 1);
 
-		if (roots)
-		{
-			for (i = num_roots-1; i > 0; i--)
-			{
-				if (pdf_is_dict(ctx, roots[i]))
-					break;
-			}
-			if (i >= 0)
-			{
-				pdf_dict_put(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root), roots[i]);
-			}
-		}
 		if (info)
 		{
 			pdf_dict_put(ctx, pdf_trailer(ctx, doc), PDF_NAME(Info), info);
@@ -704,14 +784,12 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 	}
 	fz_always(ctx)
 	{
-		for (i = 0; i < num_roots; i++)
-			pdf_drop_obj(ctx, roots[i]);
-		fz_free(ctx, roots);
 		fz_free(ctx, list);
 		doc->repair_in_progress = 0;
 	}
 	fz_catch(ctx)
 	{
+		pdf_drop_root_list(ctx, roots);
 		pdf_drop_obj(ctx, encrypt);
 		pdf_drop_obj(ctx, id);
 		pdf_drop_obj(ctx, obj);
@@ -722,10 +800,15 @@ pdf_repair_xref(fz_context *ctx, pdf_document *doc)
 	}
 
 	if (ctx->throw_on_repair)
+	{
+		pdf_drop_root_list(ctx, roots);
 		fz_throw(ctx, FZ_ERROR_REPAIRED, "File repaired");
+	}
+
+	return roots;
 }
 
-void
+static void
 pdf_repair_obj_stms(fz_context *ctx, pdf_document *doc)
 {
 	pdf_obj *dict;
@@ -744,11 +827,14 @@ pdf_repair_obj_stms(fz_context *ctx, pdf_document *doc)
 				if (pdf_name_eq(ctx, pdf_dict_get(ctx, dict, PDF_NAME(Type)), PDF_NAME(ObjStm)))
 					pdf_repair_obj_stm(ctx, doc, i);
 			}
+			fz_always(ctx)
+				pdf_drop_obj(ctx, dict);
 			fz_catch(ctx)
 			{
+				fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+				fz_report_error(ctx);
 				fz_warn(ctx, "ignoring broken object stream (%d 0 R)", i);
 			}
-			pdf_drop_obj(ctx, dict);
 		}
 	}
 
@@ -758,6 +844,144 @@ pdf_repair_obj_stms(fz_context *ctx, pdf_document *doc)
 		pdf_xref_entry *entry = pdf_get_populating_xref_entry(ctx, doc, i);
 
 		if (entry->type == 'o' && pdf_get_populating_xref_entry(ctx, doc, entry->ofs)->type != 'n')
-			fz_throw(ctx, FZ_ERROR_GENERIC, "invalid reference to non-object-stream: %d (%d 0 R)", (int)entry->ofs, i);
+		{
+			fz_warn(ctx, "invalid reference to non-object-stream: %d, assuming %d 0 R is a freed object", (int)entry->ofs, i);
+			entry->type = 'f';
+		}
 	}
+}
+
+static void
+pdf_repair_roots(fz_context *ctx, pdf_document *doc, pdf_root_list *roots)
+{
+	int i;
+
+	for (i = roots->len-1; i >= 0; i--)
+	{
+		if (pdf_is_indirect(ctx, roots->roots[i]) && pdf_is_dict(ctx, roots->roots[i]))
+		{
+			pdf_dict_put(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root), roots->roots[i]);
+			break;
+		}
+	}
+}
+
+static void
+pdf_repair_trailer(fz_context *ctx, pdf_document *doc)
+{
+	int hasroot, hasinfo;
+	pdf_obj *obj, *nobj;
+	pdf_obj *dict = NULL;
+	int i;
+
+	int xref_len = pdf_xref_len(ctx, doc);
+
+	hasroot = (pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root)) != NULL);
+	hasinfo = (pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Info)) != NULL);
+
+	fz_var(dict);
+
+	fz_try(ctx)
+	{
+		/* Scan from the end so we have a better chance of finding
+		 * newer objects if there are multiple instances of Info and
+		 * Root objects.
+		 */
+		for (i = xref_len - 1; i > 0 && (!hasinfo || !hasroot); --i)
+		{
+			pdf_xref_entry *entry = pdf_get_xref_entry_no_null(ctx, doc, i);
+			if (entry->type == 0 || entry->type == 'f')
+				continue;
+
+			fz_try(ctx)
+			{
+				dict = pdf_load_object(ctx, doc, i);
+			}
+			fz_catch(ctx)
+			{
+				fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+				fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+				fz_report_error(ctx);
+				fz_warn(ctx, "ignoring broken object (%d 0 R)", i);
+				continue;
+			}
+
+			if (!hasroot)
+			{
+				obj = pdf_dict_get(ctx, dict, PDF_NAME(Type));
+				if (obj == PDF_NAME(Catalog))
+				{
+					nobj = pdf_new_indirect(ctx, doc, i, 0);
+					pdf_dict_put_drop(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root), nobj);
+					hasroot = 1;
+				}
+			}
+
+			if (!hasinfo)
+			{
+				if (pdf_dict_get(ctx, dict, PDF_NAME(Creator)) || pdf_dict_get(ctx, dict, PDF_NAME(Producer)))
+				{
+					nobj = pdf_new_indirect(ctx, doc, i, 0);
+					pdf_dict_put_drop(ctx, pdf_trailer(ctx, doc), PDF_NAME(Info), nobj);
+					hasinfo = 1;
+				}
+			}
+
+			pdf_drop_obj(ctx, dict);
+			dict = NULL;
+		}
+	}
+	fz_always(ctx)
+	{
+		/* ensure that strings are not used in their repaired, non-decrypted form */
+		if (doc->crypt)
+		{
+			pdf_crypt *tmp;
+			pdf_clear_xref(ctx, doc);
+
+			/* ensure that Encryption dictionary and ID are cached without decryption,
+			   otherwise a decrypted Encryption dictionary and ID may be used when saving
+			   the PDF causing it to be inconsistent (since strings/streams are encrypted
+			   with the actual encryption key, not the decrypted encryption key). */
+			tmp = doc->crypt;
+			doc->crypt = NULL;
+			fz_try(ctx)
+			{
+				(void) pdf_resolve_indirect(ctx, pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Encrypt)));
+				(void) pdf_resolve_indirect(ctx, pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(ID)));
+			}
+			fz_always(ctx)
+				doc->crypt = tmp;
+			fz_catch(ctx)
+			{
+				fz_rethrow(ctx);
+			}
+		}
+	}
+	fz_catch(ctx)
+	{
+		pdf_drop_obj(ctx, dict);
+		fz_rethrow(ctx);
+	}
+}
+
+void pdf_repair_xref_aux(fz_context *ctx, pdf_document *doc, void (*mid)(fz_context *ctx, pdf_document *doc))
+{
+	pdf_root_list *roots = NULL;
+
+	fz_var(roots);
+
+	fz_try(ctx)
+	{
+		roots = pdf_repair_xref_base(ctx, doc);
+		if (mid)
+			mid(ctx, doc);
+		pdf_repair_obj_stms(ctx, doc);
+		pdf_repair_roots(ctx, doc, roots);
+		pdf_repair_trailer(ctx, doc);
+	}
+	fz_always(ctx)
+		pdf_drop_root_list(ctx, roots);
+	fz_catch(ctx)
+		fz_rethrow(ctx);
 }

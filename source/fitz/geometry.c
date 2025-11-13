@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -125,10 +125,9 @@ fz_rotate(float theta)
 	float s;
 	float c;
 
-	while (theta < 0)
+	theta = fmod(theta, 360);
+	if (theta < 0)
 		theta += 360;
-	while (theta >= 360)
-		theta -= 360;
 
 	if (fabsf(0 - theta) < FLT_EPSILON)
 	{
@@ -165,10 +164,9 @@ fz_rotate(float theta)
 fz_matrix
 fz_pre_rotate(fz_matrix m, float theta)
 {
-	while (theta < 0)
+	theta = fmod(theta, 360);
+	if (theta < 0)
 		theta += 360;
-	while (theta >= 360)
-		theta -= 360;
 
 	if (fabsf(0 - theta) < FLT_EPSILON)
 	{
@@ -258,22 +256,24 @@ fz_transform_page(fz_rect mediabox, float resolution, float rotate)
 fz_matrix
 fz_invert_matrix(fz_matrix src)
 {
-	float a = src.a;
-	float det = a * src.d - src.b * src.c;
-	if (det < -FLT_EPSILON || det > FLT_EPSILON)
-	{
-		fz_matrix dst;
-		float rdet = 1 / det;
-		dst.a = src.d * rdet;
-		dst.b = -src.b * rdet;
-		dst.c = -src.c * rdet;
-		dst.d = a * rdet;
-		a = -src.e * dst.a - src.f * dst.c;
-		dst.f = -src.e * dst.b - src.f * dst.d;
-		dst.e = a;
-		return dst;
-	}
-	return src;
+	double sa = (double)src.a;
+	double sb = (double)src.b;
+	double sc = (double)src.c;
+	double sd = (double)src.d;
+	double da, db, dc, dd, de, df;
+	double det = sa * sd - sb * sc;
+	// If we cannot invert the matrix, return a degenerate one so we can
+	// more easily spot it when debugging!
+	if (det >= -DBL_EPSILON && det <= DBL_EPSILON)
+		return fz_make_matrix(0, 0, 0, 0, 0, 0);
+	det = 1 / det;
+	da = sd * det;
+	db = -sb * det;
+	dc = -sc * det;
+	dd = sa * det;
+	de = -src.e * da - src.f * dc;
+	df = -src.e * db - src.f * dd;
+	return fz_make_matrix(da, db, dc, dd, de, df);
 }
 
 int
@@ -386,6 +386,9 @@ const fz_irect fz_infinite_irect = { FZ_MIN_INF_RECT, FZ_MIN_INF_RECT, FZ_MAX_IN
 const fz_irect fz_empty_irect = { FZ_MAX_INF_RECT, FZ_MAX_INF_RECT, FZ_MIN_INF_RECT, FZ_MIN_INF_RECT };
 const fz_irect fz_invalid_irect = { 0, 0, -1, -1 };
 const fz_irect fz_unit_bbox = { 0, 0, 1, 1 };
+
+const fz_quad fz_infinite_quad = { { -INFINITY, INFINITY}, {INFINITY, INFINITY}, {-INFINITY, -INFINITY}, {INFINITY, -INFINITY} };
+const fz_quad fz_invalid_quad = { {NAN, NAN}, {NAN, NAN}, {NAN, NAN}, {NAN, NAN} };
 
 fz_irect
 fz_irect_from_rect(fz_rect r)
@@ -583,9 +586,9 @@ fz_transform_rect(fz_rect r, fz_matrix m)
 	 * invalid rectangle after transformation. */
 	if (invalid)
 	{
-		float t;
-		t = r.x0; r.x0 = r.x1; r.x1 = t;
-		t = r.y0; r.y0 = r.y1; r.y1 = t;
+		float f;
+		f = r.x0; r.x0 = r.x1; r.x1 = f;
+		f = r.y0; r.y0 = r.y1; r.y1 = f;
 	}
 	return r;
 }
@@ -640,10 +643,91 @@ int fz_contains_rect(fz_rect a, fz_rect b)
 		(a.y1 >= b.y1));
 }
 
+int fz_overlaps_rect(fz_rect a, fz_rect b)
+{
+	return !fz_is_empty_rect(fz_intersect_rect(a, b));
+}
+
+int
+fz_is_valid_quad(fz_quad q)
+{
+	return (!isnan(q.ll.x) &&
+		!isnan(q.ll.y) &&
+		!isnan(q.ul.x) &&
+		!isnan(q.ul.y) &&
+		!isnan(q.lr.x) &&
+		!isnan(q.lr.y) &&
+		!isnan(q.ur.x) &&
+		!isnan(q.ur.y));
+}
+
+int
+fz_is_infinite_quad(fz_quad q)
+{
+	/* For a quad to be infinite, all the ordinates need to be infinite. */
+	if (!isinf(q.ll.x) ||
+		!isinf(q.ll.y) ||
+		!isinf(q.ul.x) ||
+		!isinf(q.ul.y) ||
+		!isinf(q.lr.x) ||
+		!isinf(q.lr.y) ||
+		!isinf(q.ur.x) ||
+		!isinf(q.ur.y))
+		return 0;
+
+	/* Just because all the ordinates are infinite, we don't necessarily have an infinite quad. */
+	/* The quad points in order are: ll, ul, ur, lr  OR  reversed:  ll, lr, ur, ul */
+	/* The required points are: (-inf, -inf) (-inf, inf) (inf, inf) (inf, -inf) */
+
+	/* Not the fastest way to code it, but easy to understand! */
+#define INF_QUAD_TEST(A,B,C,D) \
+	if (q.A.x < 0 && q.A.y < 0 && q.B.x < 0 && q.B.y > 0 && q.C.x > 0 && q.C.y > 0 && q.D.x > 0 && q.D.y < 0) return 1
+
+	INF_QUAD_TEST(ll, ul, ur, lr);
+	INF_QUAD_TEST(ul, ur, lr, ll);
+	INF_QUAD_TEST(ur, lr, ll, ul);
+	INF_QUAD_TEST(lr, ll, ul, ur);
+	INF_QUAD_TEST(ll, lr, ur, ul);
+	INF_QUAD_TEST(lr, ur, ul, ll);
+	INF_QUAD_TEST(ur, ul, ll, lr);
+	INF_QUAD_TEST(ul, ll, lr, ur);
+#undef INF_QUAD_TEST
+
+	return 0;
+}
+
+int fz_is_empty_quad(fz_quad q)
+{
+	/* Using "Shoelace" formula */
+	float area;
+
+	if (fz_is_infinite_quad(q))
+		return 0;
+	if (!fz_is_valid_quad(q))
+		return 1; /* All invalid quads are empty */
+
+	area = q.ll.x * q.lr.y +
+		q.lr.x * q.ur.y +
+		q.ur.x * q.ul.y +
+		q.ul.x * q.ll.y -
+		q.lr.x * q.ll.y -
+		q.ur.x * q.lr.y -
+		q.ul.x * q.ur.y -
+		q.ll.x * q.ul.y;
+
+	return area == 0;
+}
+
 fz_rect
 fz_rect_from_quad(fz_quad q)
 {
 	fz_rect r;
+
+	if (!fz_is_valid_quad(q))
+		return fz_invalid_rect;
+	if (fz_is_infinite_quad(q))
+		return fz_infinite_rect;
+
 	r.x0 = MIN4(q.ll.x, q.lr.x, q.ul.x, q.ur.x);
 	r.y0 = MIN4(q.ll.y, q.lr.y, q.ul.y, q.ur.y);
 	r.x1 = MAX4(q.ll.x, q.lr.x, q.ul.x, q.ur.x);
@@ -654,6 +738,11 @@ fz_rect_from_quad(fz_quad q)
 fz_quad
 fz_transform_quad(fz_quad q, fz_matrix m)
 {
+	if (!fz_is_valid_quad(q))
+		return q;
+	if (fz_is_infinite_quad(q))
+		return q;
+
 	q.ul = fz_transform_point(q.ul, m);
 	q.ur = fz_transform_point(q.ur, m);
 	q.ll = fz_transform_point(q.ll, m);
@@ -665,12 +754,19 @@ fz_quad
 fz_quad_from_rect(fz_rect r)
 {
 	fz_quad q;
+
+	if (!fz_is_valid_rect(r))
+		return fz_invalid_quad;
+	if (fz_is_infinite_rect(r))
+		return fz_infinite_quad;
+
 	q.ul = fz_make_point(r.x0, r.y0);
 	q.ur = fz_make_point(r.x1, r.y0);
 	q.ll = fz_make_point(r.x0, r.y1);
 	q.lr = fz_make_point(r.x1, r.y1);
 	return q;
 }
+
 
 int fz_is_point_inside_rect(fz_point p, fz_rect r)
 {
@@ -682,24 +778,91 @@ int fz_is_point_inside_irect(int x, int y, fz_irect r)
 	return (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1);
 }
 
+int fz_is_rect_inside_rect(fz_rect inner, fz_rect outer)
+{
+	if (!fz_is_valid_rect(outer))
+		return 0;
+	if (!fz_is_valid_rect(inner))
+		return 0;
+	if (inner.x0 >= outer.x0 && inner.x1 <= outer.x1 && inner.y0 >= outer.y0 && inner.y1 <= outer.y1)
+		return 1;
+	return 0;
+}
+
+int fz_is_irect_inside_irect(fz_irect inner, fz_irect outer)
+{
+	if (!fz_is_valid_irect(outer))
+		return 0;
+	if (!fz_is_valid_irect(inner))
+		return 0;
+	if (inner.x0 >= outer.x0 && inner.x1 <= outer.x1 && inner.y0 >= outer.y0 && inner.y1 <= outer.y1)
+		return 1;
+	return 0;
+}
+
+/* cross (b-a) with (p-a) */
+static float
+cross(fz_point a, fz_point b, fz_point p)
+{
+	b.x -= a.x;
+	b.y -= a.y;
+	p.x -= a.x;
+	p.y -= a.y;
+	return b.x * p.y - b.y * p.x;
+}
+
 static int fz_is_point_inside_triangle(fz_point p, fz_point a, fz_point b, fz_point c)
 {
-	float s, t, area;
-	s = a.y * c.x - a.x * c.y + (c.y - a.y) * p.x + (a.x - c.x) * p.y;
-	t = a.x * b.y - a.y * b.x + (a.y - b.y) * p.x + (b.x - a.x) * p.y;
+	/* Consider the following:
+	 *
+	 *       P
+	 *      /|
+	 *     / |
+	 *    /  |
+	 * A +---+-------+ B
+	 *       M
+	 *
+	 * The cross product of vector AB and vector AP is the distance PM.
+	 * The sign of this distance depends on what side of the line AB, P lies on.
+	 *
+	 * So, for a triangle ABC, if we take cross products of:
+	 *
+	 *  AB and AP
+	 *  BC and BP
+	 *  CA and CP
+	 *
+	 * P can only be inside the triangle if the signs are all identical.
+	 *
+	 * One of the cross products being 0 indicates that the point is on a line.
+	 * Two of the cross products being 0 indicates that the point is on a vertex.
+	 *
+	 * If 2 of the vertices are the same, the algorithm still works.
+	 * Iff all 3 of the vertices are the same, the cross products are all zero. The
+	 * value of p is irrelevant.
+	 */
+	float crossa = cross(a, b, p);
+	float crossb = cross(b, c, p);
+	float crossc = cross(c, a, p);
 
-	if ((s < 0) != (t < 0))
-		return 0;
+	/* Check for degenerate case. All vertices the same. */
+	if (crossa == 0 && crossb == 0 && crossc == 0)
+		return a.x == p.x && a.y == p.y;
 
-	area = -b.y * c.x + a.y * (c.x - b.x) + a.x * (b.y - c.y) + b.x * c.y;
+	if (crossa >= 0 && crossb >= 0 && crossc >= 0)
+		return 1;
+	if (crossa <= 0 && crossb <= 0 && crossc <= 0)
+		return 1;
 
-	return area < 0 ?
-		(s <= 0 && s + t >= area) :
-		(s >= 0 && s + t <= area);
+	return 0;
 }
 
 int fz_is_point_inside_quad(fz_point p, fz_quad q)
 {
+	if (!fz_is_valid_quad(q))
+		return 0;
+	if (fz_is_infinite_quad(q))
+		return 1;
+
 	return
 		fz_is_point_inside_triangle(p, q.ul, q.ur, q.lr) ||
 		fz_is_point_inside_triangle(p, q.ul, q.lr, q.ll);
@@ -707,6 +870,11 @@ int fz_is_point_inside_quad(fz_point p, fz_quad q)
 
 int fz_is_quad_inside_quad(fz_quad needle, fz_quad haystack)
 {
+	if (!fz_is_valid_quad(needle) || !fz_is_valid_quad(haystack))
+		return 0;
+	if (fz_is_infinite_quad(haystack))
+		return 1;
+
 	return
 		fz_is_point_inside_quad(needle.ul, haystack) &&
 		fz_is_point_inside_quad(needle.ur, haystack) &&

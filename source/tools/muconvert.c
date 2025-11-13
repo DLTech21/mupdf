@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -44,8 +44,9 @@ static const char *format = NULL;
 static const char *options = "";
 
 static fz_context *ctx;
-static fz_document *doc;
+static fz_document *doc = NULL;
 static fz_document_writer *out;
+static fz_box_type page_box = FZ_CROP_BOX;
 static int count;
 
 static int usage(void)
@@ -54,6 +55,7 @@ static int usage(void)
 		"Usage: mutool convert [options] file [pages]\n"
 		"\t-p -\tpassword\n"
 		"\n"
+		"\t-b -\tuse named page box (MediaBox, CropBox, BleedBox, TrimBox, or ArtBox)\n"
 		"\t-A -\tnumber of bits of antialiasing (0 to 8)\n"
 		"\t-W -\tpage width for EPUB layout\n"
 		"\t-H -\tpage height for EPUB layout\n"
@@ -86,9 +88,10 @@ static int usage(void)
 
 static void runpage(int number)
 {
-	fz_rect mediabox;
+	fz_rect box;
 	fz_page *page;
 	fz_device *dev = NULL;
+	fz_matrix ctm;
 
 	page = fz_load_page(ctx, doc, number - 1);
 
@@ -96,9 +99,14 @@ static void runpage(int number)
 
 	fz_try(ctx)
 	{
-		mediabox = fz_bound_page(ctx, page);
-		dev = fz_begin_page(ctx, out, mediabox);
-		fz_run_page(ctx, page, dev, fz_identity, NULL);
+		box = fz_bound_page_box(ctx, page, page_box);
+
+		// Realign page box on 0,0
+		ctm = fz_translate(-box.x0, -box.y0);
+		box = fz_transform_rect(box, ctm);
+
+		dev = fz_begin_page(ctx, out, box);
+		fz_run_page(ctx, page, dev, ctm, NULL);
 		fz_end_page(ctx, out);
 	}
 	fz_always(ctx)
@@ -129,7 +137,7 @@ int muconvert_main(int argc, char **argv)
 	int i, c;
 	int retval = EXIT_SUCCESS;
 
-	while ((c = fz_getopt(argc, argv, "p:A:W:H:S:U:Xo:F:O:")) != -1)
+	while ((c = fz_getopt(argc, argv, "p:A:W:H:S:U:Xo:F:O:b:")) != -1)
 	{
 		switch (c)
 		{
@@ -143,9 +151,18 @@ int muconvert_main(int argc, char **argv)
 		case 'U': layout_css = fz_optarg; break;
 		case 'X': layout_use_doc_css = 0; break;
 
-		case 'o': output = fz_optarg; break;
+		case 'o': output = fz_optpath(fz_optarg); break;
 		case 'F': format = fz_optarg; break;
 		case 'O': options = fz_optarg; break;
+
+		case 'b':
+			page_box = fz_box_type_from_string(fz_optarg);
+			if (page_box == FZ_UNKNOWN_BOX)
+			{
+				fprintf(stderr, "Invalid box type: %s\n", fz_optarg);
+				return 1;
+			}
+			break;
 		}
 	}
 
@@ -165,7 +182,8 @@ int muconvert_main(int argc, char **argv)
 		fz_register_document_handlers(ctx);
 	fz_catch(ctx)
 	{
-		fprintf(stderr, "cannot register document handlers: %s\n", fz_caught_message(ctx));
+		fz_report_error(ctx);
+		fprintf(stderr, "cannot register document handlers\n");
 		fz_drop_context(ctx);
 		return EXIT_FAILURE;
 	}
@@ -173,11 +191,7 @@ int muconvert_main(int argc, char **argv)
 	fz_set_aa_level(ctx, alphabits);
 
 	if (layout_css)
-	{
-		fz_buffer *buf = fz_read_file(ctx, layout_css);
-		fz_set_user_css(ctx, fz_string_from_buffer(ctx, buf));
-		fz_drop_buffer(ctx, buf);
-	}
+		fz_load_user_css(ctx, layout_css);
 
 	fz_set_use_document_css(ctx, layout_use_doc_css);
 
@@ -186,11 +200,13 @@ int muconvert_main(int argc, char **argv)
 		out = fz_new_document_writer(ctx, output, format, options);
 	fz_catch(ctx)
 	{
-		fprintf(stderr, "cannot create document: %s\n", fz_caught_message(ctx));
+		fz_report_error(ctx);
+		fprintf(stderr, "cannot create document\n");
 		fz_drop_context(ctx);
 		return EXIT_FAILURE;
 	}
 
+	fz_var(doc);
 	fz_try(ctx)
 	{
 		for (i = fz_optind; i < argc; ++i)
@@ -198,7 +214,7 @@ int muconvert_main(int argc, char **argv)
 			doc = fz_open_document(ctx, argv[i]);
 			if (fz_needs_password(ctx, doc))
 				if (!fz_authenticate_password(ctx, doc, password))
-					fz_throw(ctx, FZ_ERROR_GENERIC, "cannot authenticate password: %s", argv[i]);
+					fz_throw(ctx, FZ_ERROR_ARGUMENT, "cannot authenticate password: %s", argv[i]);
 			fz_layout_document(ctx, doc, layout_w, layout_h, layout_em);
 			count = fz_count_pages(ctx, doc);
 
@@ -219,7 +235,7 @@ int muconvert_main(int argc, char **argv)
 	}
 	fz_catch(ctx)
 	{
-		fz_log_error(ctx, fz_caught_message(ctx));
+		fz_report_error(ctx);
 		retval = EXIT_FAILURE;
 	}
 

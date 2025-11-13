@@ -815,9 +815,6 @@
     <ClCompile Include="..\..\thirdparty\tesseract\src\lstm\stridemap.cpp">
       <Filter>Source Files\tesseract\lstm</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\thirdparty\tesseract\src\lstm\tfnetwork.cpp">
-      <Filter>Source Files\tesseract\lstm</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\lstm\weightmatrix.cpp">
       <Filter>Source Files\tesseract\lstm</Filter>
     </ClCompile>
@@ -836,16 +833,10 @@
     <ClCompile Include="..\..\thirdparty\tesseract\src\ccutil\errcode.cpp">
       <Filter>Source Files\tesseract\ccutil</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\thirdparty\tesseract\src\ccutil\mainblk.cpp">
-      <Filter>Source Files\tesseract\ccutil</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\ccutil\scanutils.cpp">
       <Filter>Source Files\tesseract\ccutil</Filter>
     </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\ccutil\serialis.cpp">
-      <Filter>Source Files\tesseract\ccutil</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\thirdparty\tesseract\src\ccutil\strngs.cpp">
       <Filter>Source Files\tesseract\ccutil</Filter>
     </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\ccutil\tessdatamanager.cpp">
@@ -1005,6 +996,9 @@
       <Filter>Source Files\tesseract\api</Filter>
     </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\api\lstmboxrenderer.cpp">
+      <Filter>Source Files\tesseract\api</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\thirdparty\tesseract\src\api\pagerenderer.cpp">
       <Filter>Source Files\tesseract\api</Filter>
     </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\api\pdfrenderer.cpp">
@@ -1210,6 +1204,9 @@
     </ClCompile>
     <ClCompile Include="..\..\thirdparty\tesseract\src\textord\gap_map.cpp">
       <Filter>Source Files\tesseract\textord</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\thirdparty\tesseract\src\ccstruct\image.cpp">
+      <Filter>Source Files\tesseract\ccstruct</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

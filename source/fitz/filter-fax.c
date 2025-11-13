@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -411,13 +411,13 @@ dec1d(fz_context *ctx, fz_faxd *fax)
 		code = get_code(ctx, fax, cf_white_decode, cfd_white_initial_bits);
 
 	if (code == UNCOMPRESSED)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "uncompressed data in faxd");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "uncompressed data in faxd");
 
 	if (code < 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "negative code in 1d faxd");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "negative code in 1d faxd");
 
 	if (fax->a + code > fax->columns)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "overflow in 1d faxd");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "overflow in 1d faxd");
 
 	if (fax->c)
 		setbits(fax->dst, fax->a, fax->a + code);
@@ -450,13 +450,13 @@ dec2d(fz_context *ctx, fz_faxd *fax)
 			code = get_code(ctx, fax, cf_white_decode, cfd_white_initial_bits);
 
 		if (code == UNCOMPRESSED)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "uncompressed data in faxd");
+			fz_throw(ctx, FZ_ERROR_FORMAT, "uncompressed data in faxd");
 
 		if (code < 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "negative code in 2d faxd");
+			fz_throw(ctx, FZ_ERROR_FORMAT, "negative code in 2d faxd");
 
 		if (fax->a + code > fax->columns)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "overflow in 2d faxd");
+			fz_throw(ctx, FZ_ERROR_FORMAT, "overflow in 2d faxd");
 
 		if (fax->c)
 			setbits(fax->dst, fax->a, fax->a + code);
@@ -549,13 +549,13 @@ dec2d(fz_context *ctx, fz_faxd *fax)
 		break;
 
 	case UNCOMPRESSED:
-		fz_throw(ctx, FZ_ERROR_GENERIC, "uncompressed data in faxd");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "uncompressed data in faxd");
 
 	case ERROR:
-		fz_throw(ctx, FZ_ERROR_GENERIC, "invalid code in 2d faxd");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "invalid code in 2d faxd");
 
 	default:
-		fz_throw(ctx, FZ_ERROR_GENERIC, "invalid code in 2d faxd (%d)", code);
+		fz_throw(ctx, FZ_ERROR_FORMAT, "invalid code in 2d faxd (%d)", code);
 	}
 }
 
@@ -580,7 +580,7 @@ next_faxd(fz_context *ctx, fz_stream *stm, size_t max)
 				eat_bits(fax, 1);
 		}
 		if ((fax->word >> (32 - 12)) != 1)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "initial EOL not found");
+			fz_throw(ctx, FZ_ERROR_FORMAT, "initial EOL not found");
 	}
 
 	if (fax->stage == STATE_INIT)
@@ -644,6 +644,8 @@ loop:
 		}
 		fz_catch(ctx)
 		{
+			fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+			fz_report_error(ctx);
 			goto error;
 		}
 	}
@@ -656,9 +658,17 @@ loop:
 		}
 		fz_catch(ctx)
 		{
+			fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+			fz_report_error(ctx);
 			goto error;
 		}
 	}
+
+	/* Some Fax streams appear to give up at the end. We could detect for this
+	 * with this:
+	 * if (fax->a >= fax->columns && fax->rows == fax->ridx+1)
+	 * 	goto eol;
+	 */
 
 	/* no eol check after makeup codes nor in the middle of an H code */
 	if (fax->stage == STATE_MAKEUP || fax->stage == STATE_H1 || fax->stage == STATE_H2)
@@ -724,14 +734,14 @@ eol:
 			fax->dim = 2;
 	}
 
-	/* if end_of_line & encoded_byte_align, EOLs are *not* optional */
-	if (fax->encoded_byte_align)
-	{
-		if (fax->end_of_line)
-			eat_bits(fax, (12 - fax->bidx) & 7);
-		else
-			eat_bits(fax, (8 - fax->bidx) & 7);
-	}
+	/* If end_of_line & encoded_byte_align - we don't know what to do here.
+	 * GS doesn't offer us any hints either. Previously, we used to do:
+	 *      eat_bits(fax, (12 - fax->bidx) & 7);
+	 * but we can't understand what we were trying to do, and it fails with
+	 * at least one file. Removing it doesn't harm anything in the cluster,
+	 * and brings us into line with gs. */
+	if (fax->encoded_byte_align && !fax->end_of_line)
+		eat_bits(fax, (8 - fax->bidx) & 7);
 
 	/* no more space in output, don't decode the next row yet */
 	if (p == fax->buffer + max)
@@ -795,7 +805,7 @@ fz_open_faxd(fz_context *ctx, fz_stream *chain,
 	fz_faxd *fax;
 
 	if (columns < 0 || columns >= INT_MAX - 7)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "too many columns lead to an integer overflow (%d)", columns);
+		fz_throw(ctx, FZ_ERROR_LIMIT, "too many columns integer overflow (%d)", columns);
 
 	fax = fz_malloc_struct(ctx, fz_faxd);
 	fz_try(ctx)

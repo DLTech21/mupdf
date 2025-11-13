@@ -35,7 +35,7 @@ struct pdf_annot
 	int is_hot;
 	int is_active;
 
-	int needs_new_ap; /* If set, then a resynthesis of this annotation has been requested. */
+	int needs_new_ap; /* If set, then a resynthesis of this annotation has been requested. (-1 to request local only) */
 	int has_new_ap; /* If set, then the appearance stream has changed since last queried. */
 	int ignore_trigger_events; /* Avoids triggering events during editing of e.g. text field widgets. */
 	int hidden_editing; /* Hides annotation from rendering e.g. during editing. */
@@ -50,7 +50,7 @@ typedef struct
 	pdf_obj *obj;
 } pdf_link;
 
-void pdf_load_annots(fz_context *ctx, pdf_page *page, pdf_obj *annots);
+void pdf_load_annots(fz_context *ctx, pdf_page *page);
 void pdf_drop_annots(fz_context *ctx, pdf_annot *annot_list);
 void pdf_drop_widgets(fz_context *ctx, pdf_annot *widget_list);
 
@@ -63,5 +63,8 @@ pdf_obj *pdf_add_filespec(fz_context *ctx, pdf_document *doc, const char *file, 
 pdf_obj *pdf_add_url_filespec(fz_context *ctx, pdf_document *doc, const char *url);
 char *pdf_parse_link_dest(fz_context *ctx, pdf_document *doc, pdf_obj *dest);
 char *pdf_parse_link_action(fz_context *ctx, pdf_document *doc, pdf_obj *obj, int pagenum);
+
+/* Rect diff is not really a rect! Just returned as such for convenience. */
+fz_rect pdf_annot_rect_diff(fz_context *ctx, pdf_annot *annot);
 
 #endif

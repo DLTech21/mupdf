@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -884,6 +884,8 @@ cursor_flush(fz_edgebuffer * FZ_RESTRICT eb)
 	}
 	else
 	{
+		iy2 = 0;
+
 		/* Try to merge the end of cursor 0 with the start of cursor 0 */
 		if (cr0->saved)
 		{
@@ -1766,7 +1768,7 @@ static void fz_convert_edgebuffer_app(fz_context *ctx, fz_rasterizer *ras, int e
 						rl = *row++;
 						rr = *row++;
 						w = -(rl&1) | 1;
-						rl &= ~1;
+						/* rl &= ~1; */
 						rowlen--;
 						if (rr > lr)
 							lr = rr;

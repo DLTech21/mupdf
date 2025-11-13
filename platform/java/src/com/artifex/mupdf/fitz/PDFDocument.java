@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -60,9 +60,13 @@ public class PDFDocument extends Document
 		super(newNative());
 	}
 
+	public native void check();
+
 	public boolean isPDF() {
 		return true;
 	}
+
+	public native void setPageTreeCache(boolean enabled);
 
 	public native PDFObject findPage(int at);
 
@@ -148,6 +152,8 @@ public class PDFDocument extends Document
 	public native boolean wasRepaired();
 	public native boolean canBeSavedIncrementally();
 	public native boolean isRedacted();
+
+	public native void rearrangePages(int[] pages);
 
 	public native void save(String filename, String options);
 
@@ -243,9 +249,10 @@ public class PDFDocument extends Document
 	public native int countSignatures();
 
 	public native PDFObject addEmbeddedFile(String filename, String mimetype, Buffer contents, long created, long modified, boolean addChecksum);
-	public native PDFEmbeddedFileParams getEmbeddedFileParams(PDFObject fs);
+	public native PDFFilespecParams getFilespecParams(PDFObject fs);
 	public native Buffer loadEmbeddedFileContents(PDFObject fs);
 	public native boolean verifyEmbeddedFileChecksum(PDFObject fs);
+	public native boolean isEmbeddedFile(PDFObject fs);
 
 	public PDFObject addEmbeddedFile(String filename, String mimetype, InputStream stream, Date created, Date modified, boolean addChecksum) {
 		Buffer contents = new Buffer();
@@ -255,14 +262,14 @@ public class PDFDocument extends Document
 		return addEmbeddedFile(filename, mimetype, contents, createdTime, modifiedTime, addChecksum);
 	}
 
-	public static class PDFEmbeddedFileParams {
+	public static class PDFFilespecParams {
 		public final String filename;
 		public final String mimetype;
 		public final int size;
 		public final Date creationDate;
 		public final Date modificationDate;
 
-		protected PDFEmbeddedFileParams(String filename, String mimetype, int size, long created, long modified) {
+		protected PDFFilespecParams(String filename, String mimetype, int size, long created, long modified) {
 			this.filename = filename;
 			this.mimetype = mimetype;
 			this.size = size;
@@ -271,4 +278,57 @@ public class PDFDocument extends Document
 		}
 	}
 
+	public static class PDFEmbeddedFileParams extends PDFFilespecParams {
+		protected PDFEmbeddedFileParams(String filename, String mimetype, int size, long created, long modified) {
+			super(filename, mimetype, size, created, modified);
+		}
+	}
+
+	public static final int LAYER_UI_LABEL = 0;
+	public static final int LAYER_UI_CHECKBOX = 1;
+	public static final int LAYER_UI_RADIOBOX = 2;
+
+	public static class LayerConfigUIInfo {
+		public int type;
+		public int depth;
+		public boolean selected;
+		public boolean locked;
+		public String text;
+	}
+
+	public native int countLayerConfigs();
+	public native String getLayerConfigName(int config);
+	public native String getLayerConfigCreator(int config);
+	public native void selectLayerConfig(int config);
+
+	public native int countLayerConfigUIs();
+	public native LayerConfigUIInfo getLayerConfigUIInfo(int configui);
+
+	public native int countLayers();
+	public native boolean isLayerVisible(int layer);
+	public native void setLayerVisible(int layer, boolean visible);
+	public native String getLayerName(int layer);
+
+	public native int countAssociatedFiles();
+	public native PDFObject associatedFile(int idx);
+
+	public static final int NOT_ZUGFERD = 0;
+	public static final int ZUGFERD_COMFORT = 1;
+	public static final int ZUGFERD_BASIC = 2;
+	public static final int ZUGFERD_EXTENDED = 3;
+	public static final int ZUGFERD_BASIC_WL = 4;
+	public static final int ZUGFERD_MINIMUM = 5;
+	public static final int ZUGFERD_XRECHNUNG = 6;
+	public static final int ZUGFERD_UNKNOWN = 7;
+
+	public native int zugferdProfile();
+	public native float zugferdVersion();
+	public native Buffer zugferdXML();
+
+	public native Image loadImage(PDFObject imgobj);
+	public native PDFObject lookupDest(PDFObject destination);
+
+	public native void subsetFonts();
+
+	public native void bake(boolean bakeAnnots, boolean bakeWidgets);
 }

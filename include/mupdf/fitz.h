@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -43,6 +43,8 @@ extern "C" {
 #include "mupdf/fitz/tree.h"
 #include "mupdf/fitz/bidi.h"
 #include "mupdf/fitz/xml.h"
+#include "mupdf/fitz/json.h"
+#include "mupdf/fitz/hyphen.h"
 
 /* I/O */
 #include "mupdf/fitz/buffer.h"
@@ -51,13 +53,15 @@ extern "C" {
 #include "mupdf/fitz/compressed-buffer.h"
 #include "mupdf/fitz/filter.h"
 #include "mupdf/fitz/archive.h"
+#include "mupdf/fitz/heap.h"
+
 
 /* Resources */
 #include "mupdf/fitz/store.h"
 #include "mupdf/fitz/color.h"
 #include "mupdf/fitz/pixmap.h"
-#include "mupdf/fitz/bitmap.h"
 #include "mupdf/fitz/image.h"
+#include "mupdf/fitz/bitmap.h"
 #include "mupdf/fitz/shade.h"
 #include "mupdf/fitz/font.h"
 #include "mupdf/fitz/path.h"
@@ -87,6 +91,9 @@ extern "C" {
 
 #include "mupdf/fitz/story.h"
 #include "mupdf/fitz/story-writer.h"
+
+#include "mupdf/fitz/deskew.h"
+#include "mupdf/fitz/barcode.h"
 
 #ifdef __cplusplus
 }

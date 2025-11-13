@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -30,11 +30,9 @@
 
 enum { T, R, B, L };
 
-#define DEFAULT_DIR FZ_BIDI_LTR
-
 static const char *html_default_css =
 "@page{margin:3em 2em}"
-"a{color:#06C;text-decoration:underline}"
+"a:link{color:blue;text-decoration:underline}"
 "address{display:block;font-style:italic}"
 "b{font-weight:bold}"
 "bdo{direction:rtl;unicode-bidi:bidi-override}"
@@ -85,7 +83,8 @@ static const char *html_default_css =
 "var{font-style:italic}"
 "colgroup{display:table-column-group}"
 "col{display:table-column}"
-"caption{display:block;text-align:center}"
+"figcaption,caption{display:block;text-align:center}"
+"address,article,aside,figure,footer,header,hgroup,main,nav,section,search{display:block}"
 ;
 
 static const char *mobi_default_css =
@@ -112,7 +111,7 @@ static const char *fb2_default_css =
 "table{display:table}"
 "tr{display:table-row}"
 "th,td{display:table-cell}"
-"a{color:#06C;text-decoration:underline}"
+"a{color:blue;text-decoration:underline}"
 "a[type=note]{font-size:small;vertical-align:super}"
 "code{white-space:pre;font-family:monospace}"
 "emphasis{font-style:italic}"
@@ -131,6 +130,89 @@ static const char *fb2_default_css =
 "empty-line+p{margin-top:0}"
 "section>title{page-break-before:always}"
 ;
+
+static const char *known_html_tags[] = {
+	// TODO: add known FB2 tags?
+	// Sorted list of all HTML tags.
+	"a", "abbr", "acronym", "address", "annotation-xml", "applet", "area",
+	"article", "aside", "audio", "b", "base", "basefont", "bdi", "bdo",
+	"bgsound", "big", "blink", "blockquote", "body", "br", "button",
+	"canvas", "caption", "center", "cite", "code", "col", "colgroup",
+	"data", "datalist", "dd", "del", "desc", "details", "dfn", "dir",
+	"div", "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure",
+	"font", "footer", "foreignobject", "form", "frame", "frameset", "h1",
+	"h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr", "html",
+	"i", "iframe", "image", "img", "input", "ins", "isindex", "kbd",
+	"keygen", "label", "legend", "li", "link", "listing", "main",
+	"malignmark", "map", "mark", "marquee", "math", "menu", "menuitem",
+	"meta", "meter", "mglyph", "mi", "mn", "mo", "ms", "mtext", "multicol",
+	"nav", "nextid", "nobr", "noembed", "noframes", "noscript", "object",
+	"ol", "optgroup", "option", "output", "p", "param", "plaintext", "pre",
+	"progress", "q", "rb", "rp", "rt", "rtc", "ruby", "s", "samp",
+	"script", "section", "select", "small", "source", "spacer", "span",
+	"strike", "strong", "style", "sub", "summary", "sup", "svg", "table",
+	"tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time",
+	"title", "tr", "track", "tt", "u", "ul", "var", "video", "wbr", "xmp",
+};
+
+static const char *known_fb2_tags[] = {
+	"FictionBook", "a", "binary", "body", "cite", "code", "coverpage",
+	"date", "description", "emphasis", "empty-line", "epigraph", "image",
+	"p", "poem", "section", "stanza", "strikethrough", "strong",
+	"stylesheet", "sub", "subtitle", "sup", "table", "td", "text-author",
+	"th", "title", "title-info", "tr", "v",
+};
+
+static const char *find_known_html_tag(const char *tag)
+{
+	int l = 0;
+	int r = nelem(known_html_tags) / 2 - 1;
+	while (l <= r)
+	{
+		int m = (l + r) >> 1;
+		int c = strcmp(tag, known_html_tags[m]);
+		if (c < 0)
+			r = m - 1;
+		else if (c > 0)
+			l = m + 1;
+		else
+			return known_html_tags[m];
+	}
+	return NULL;
+}
+
+static const char *find_known_fb2_tag(const char *tag)
+{
+	int l = 0;
+	int r = nelem(known_fb2_tags) / 2 - 1;
+	while (l <= r)
+	{
+		int m = (l + r) >> 1;
+		int c = strcmp(tag, known_fb2_tags[m]);
+		if (c < 0)
+			r = m - 1;
+		else if (c > 0)
+			l = m + 1;
+		else
+			return known_fb2_tags[m];
+	}
+	return NULL;
+}
+
+typedef struct
+{
+	int maxcols;
+	int ncols;
+	col_style *styles;
+}
+table_styles;
+
+static void
+drop_table_styles(fz_context *ctx, table_styles *ts)
+{
+	fz_free(ctx, ts->styles);
+	ts->styles = NULL;
+}
 
 struct genstate
 {
@@ -151,6 +233,9 @@ struct genstate
 	fz_bidi_direction markup_dir;
 	fz_text_language markup_lang;
 	char *href;
+
+	table_styles tab_styles;
+	int col_num;
 
 	fz_css_style_splay *styles;
 };
@@ -295,40 +380,52 @@ static void flush_space(fz_context *ctx, fz_html_box *flow, int lang, struct gen
 	}
 }
 
-/* pair-wise lookup table for UAX#14 linebreaks */
-static const char *pairbrk[29] =
+/* pair-wise lookup table for UAX#14 linebreaks
+The linebreak table entries mean:
+^ prohibited break
+	never break before A and after B, even with one or more spaces in between
+% indirect break
+	do not break before A, unless one or more spaces follow B
+_ direct break
+	break allowed before A
+*/
+static const char *pairbrk[32] =
 {
-/*	-OCCQGNESIPPNAHIIHBBBZCWHHJJJR- */
-/*	-PLPULSXYSROULLDNYAB2WMJ23LVTI- */
-	"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^", /* OP open punctuation */
-	"_^^%%^^^^%%_____%%__^^^______", /* CL close punctuation */
-	"_^^%%^^^^%%%%%__%%__^^^______", /* CP close parenthesis */
-	"^^^%%%^^^%%%%%%%%%%%^^^%%%%%%", /* QU quotation */
-	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%", /* GL non-breaking glue */
-	"_^^%%%^^^_______%%__^^^______", /* NS nonstarters */
-	"_^^%%%^^^______%%%__^^^______", /* EX exclamation/interrogation */
-	"_^^%%%^^^__%_%__%%__^^^______", /* SY symbols allowing break after */
-	"_^^%%%^^^__%%%__%%__^^^______", /* IS infix numeric separator */
-	"%^^%%%^^^__%%%%_%%__^^^%%%%%_", /* PR prefix numeric */
-	"%^^%%%^^^__%%%__%%__^^^______", /* PO postfix numeric */
-	"%^^%%%^^^%%%%%_%%%__^^^______", /* NU numeric */
-	"%^^%%%^^^__%%%_%%%__^^^______", /* AL ordinary alphabetic and symbol characters */
-	"%^^%%%^^^__%%%_%%%__^^^______", /* HL hebrew letter */
-	"_^^%%%^^^_%____%%%__^^^______", /* ID ideographic */
-	"_^^%%%^^^______%%%__^^^______", /* IN inseparable characters */
-	"_^^%_%^^^__%____%%__^^^______", /* HY hyphens */
-	"_^^%_%^^^_______%%__^^^______", /* BA break after */
-	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%", /* BB break before */
-	"_^^%%%^^^_______%%_^^^^______", /* B2 break opportunity before and after */
-	"____________________^________", /* ZW zero width space */
-	"%^^%%%^^^__%%%_%%%__^^^______", /* CM combining mark */
-	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%", /* WJ word joiner */
-	"_^^%%%^^^_%____%%%__^^^___%%_", /* H2 hangul leading/vowel syllable */
-	"_^^%%%^^^_%____%%%__^^^____%_", /* H3 hangul leading/vowel/trailing syllable */
-	"_^^%%%^^^_%____%%%__^^^%%%%__", /* JL hangul leading jamo */
-	"_^^%%%^^^_%____%%%__^^^___%%_", /* JV hangul vowel jamo */
-	"_^^%%%^^^_%____%%%__^^^____%_", /* JT hangul trailing jamo */
-	"_^^%%%^^^_______%%__^^^_____%", /* RI regional indicator */
+/*	-OCCQGNESIPPNAHIIHBBBZCWHHJJJREEZ- */
+/*	-PLPULSXYSROULLDNYAB2WMJ23LVTIBMW- */
+/*	-                               J- */
+	"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^", /* OP open punctuation */
+	"_^^%%^^^^%%____%%%__^^^________%", /* CL close punctuation */
+	"_^^%%^^^^%%%%%_%%%__^^^________%", /* CP close parenthesis */
+	"^^^%%%^^^%%%%%%%%%%%^^^%%%%%%%%%", /* QU quotation */
+	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%%%%", /* GL non-breaking glue */
+	"_^^%%%^^^______%%%__^^^________%", /* NS nonstarters */
+	"_^^%%%^^^______%%%__^^^________%", /* EX exclamation/interrogation */
+	"_^^%%%^^^__%_%_%%%__^^^________%", /* SY symbols allowing break after */
+	"_^^%%%^^^__%%%_%%%__^^^________%", /* IS infix numeric separator */
+	"%^^%%%^^^__%%%%%%%__^^^%%%%%_%%%", /* PR prefix numeric */
+	"%^^%%%^^^__%%%_%%%__^^^________%", /* PO postfix numeric */
+	"%^^%%%^^^%%%%%_%%%__^^^________%", /* NU numeric */
+	"%^^%%%^^^%%%%%_%%%__^^^________%", /* AL ordinary alphabetic and symbol characters */
+	"%^^%%%^^^%%%%%_%%%__^^^________%", /* HL hebrew letter */
+	"_^^%%%^^^_%____%%%__^^^________%", /* ID ideographic */
+	"_^^%%%^^^______%%%__^^^________%", /* IN inseparable characters */
+	"_^^%_%^^^__%___%%%__^^^________%", /* HY hyphens */
+	"_^^%_%^^^______%%%__^^^________%", /* BA break after */
+	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%%%%", /* BB break before */
+	"_^^%%%^^^______%%%_^^^^________%", /* B2 break opportunity before and after */
+	"____________________^___________", /* ZW zero width space */
+	"%^^%%%^^^%_%%%_%%%__^^^________%", /* CM combining mark */
+	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%%%%", /* WJ word joiner */
+	"_^^%%%^^^_%____%%%__^^^___%%___%", /* H2 hangul leading/vowel syllable */
+	"_^^%%%^^^_%____%%%__^^^____%___%", /* H3 hangul leading/vowel/trailing syllable */
+	"_^^%%%^^^_%____%%%__^^^%%%%____%", /* JL hangul leading jamo */
+	"_^^%%%^^^_%____%%%__^^^___%%___%", /* JV hangul vowel jamo */
+	"_^^%%%^^^_%____%%%__^^^____%___%", /* JT hangul trailing jamo */
+	"_^^%%%^^^______%%%__^^^_____%__%", /* RI regional indicator */
+	"_^^%%%^^^_%____%%%__^^^_______%%", /* EB emoji base */
+	"_^^%%%^^^_%____%%%__^^^________%", /* EM emoji modifier */
+	"%^^%%%^^^%%%%%%%%%%%^^^%%%%%%%%%", /* ZWJ zero width joiner */
 };
 
 static fz_html_box *
@@ -351,6 +448,81 @@ find_flow_encloser(fz_context *ctx, fz_html_box *flow)
 	return flow;
 }
 
+static void
+generate_text_run(fz_context *ctx, fz_html_box *box, fz_html_box *flow, const char *mark, const char *end, int lang, struct genstate *g)
+{
+	fz_pool *pool = g->pool;
+	int bsp = box->style->white_space & WS_ALLOW_BREAK_SPACE;
+	const char *text = mark;
+	const char *prev;
+	int c;
+
+	while (text < end)
+	{
+		prev = text;
+		text += fz_chartorune(&c, text);
+		if (c == 0xAD) /* soft hyphen */
+		{
+			if (mark != prev)
+				add_flow_word(ctx, pool, flow, box, mark, prev, lang);
+			if (box->style->hyphens != HYP_NONE)
+				add_flow_shyphen(ctx, pool, flow, box);
+			mark = text;
+			g->last_brk_cls = UCDN_LINEBREAK_CLASS_WJ; /* don't add sbreaks after a soft hyphen */
+		}
+		else if (bsp) /* allow soft breaks */
+		{
+			int this_brk_cls = ucdn_get_resolved_linebreak_class(c);
+			if (this_brk_cls <= UCDN_LINEBREAK_CLASS_ZWJ)
+			{
+				int brk = pairbrk[g->last_brk_cls][this_brk_cls];
+
+				/* we handle spaces elsewhere, so ignore these classes */
+				if (brk == '@') brk = '^';
+				if (brk == '#') brk = '^';
+				if (brk == '%') brk = '^';
+
+				if (brk == '_')
+				{
+					if (mark != prev)
+						add_flow_word(ctx, pool, flow, box, mark, prev, lang);
+					add_flow_sbreak(ctx, pool, flow, box);
+					mark = prev;
+				}
+
+				g->last_brk_cls = this_brk_cls;
+			}
+		}
+	}
+	if (mark != text)
+		add_flow_word(ctx, pool, flow, box, mark, text, lang);
+}
+
+static void
+generate_text_run_with_hyphens(fz_context *ctx, fz_html_box *box, fz_html_box *flow, const char *mark, const char *end, int lang, fz_hyphenator *hyph, struct genstate *g)
+{
+	char word[256];
+	int size = end - mark;
+	if (size < 64)
+	{
+		fz_hyphenate_word(ctx, hyph, mark, size, word, sizeof word);
+		generate_text_run(ctx, box, flow, word, word + strlen(word), lang, g);
+	}
+	else
+	{
+		generate_text_run(ctx, box, flow, mark, end, lang, g);
+	}
+}
+
+static int fz_isletter_or_apos(int c)
+{
+	int cat;
+	if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '\'' || c == 0x2019)
+		return 1;
+	cat = ucdn_get_general_category(c);
+	return cat >= UCDN_GENERAL_CATEGORY_LL && cat <= UCDN_GENERAL_CATEGORY_LU;
+}
+
 static void generate_text(fz_context *ctx, fz_html_box *box, const char *text, int lang, struct genstate *g)
 {
 	fz_html_box *flow;
@@ -358,12 +530,24 @@ static void generate_text(fz_context *ctx, fz_html_box *box, const char *text, i
 	int collapse = box->style->white_space & WS_COLLAPSE;
 	int bsp = box->style->white_space & WS_ALLOW_BREAK_SPACE;
 	int bnl = box->style->white_space & WS_FORCE_BREAK_NEWLINE;
+	fz_hyphenator *hyph = NULL;
+	int c, n;
 
 	static const char *space = " ";
 
 	flow = find_flow_encloser(ctx, box);
 	if (flow == NULL)
 		return;
+
+	if (box->style->hyphens == HYP_AUTO && lang != FZ_LANG_UNSET)
+	{
+		hyph = fz_lookup_hyphenator(ctx, lang);
+		if (!hyph)
+		{
+			char tmp[8];
+			fz_warn(ctx, "no hyphenation table for lang='%s'", fz_string_from_text_language(tmp, lang));
+		}
+	}
 
 	while (*text)
 	{
@@ -401,8 +585,7 @@ static void generate_text(fz_context *ctx, fz_html_box *box, const char *text, i
 		}
 		else
 		{
-			const char *prev, *mark = text;
-			int c;
+			const char *mark = text;
 
 			flush_space(ctx, flow, lang, g);
 
@@ -410,43 +593,45 @@ static void generate_text(fz_context *ctx, fz_html_box *box, const char *text, i
 				g->last_brk_cls = UCDN_LINEBREAK_CLASS_WJ;
 
 			while (*text && !iswhite(*text))
+				++text;
+
+			if (hyph)
 			{
-				prev = text;
-				text += fz_chartorune(&c, text);
-				if (c == 0xAD) /* soft hyphen */
+				// split word into letter and non-letter runs for hyphenator
+				const char *p = mark;
+				n = fz_chartorune(&c, p);
+				while (p < text)
 				{
-					if (mark != prev)
-						add_flow_word(ctx, pool, flow, box, mark, prev, lang);
-					add_flow_shyphen(ctx, pool, flow, box);
-					mark = text;
-					g->last_brk_cls = UCDN_LINEBREAK_CLASS_WJ; /* don't add sbreaks after a soft hyphen */
-				}
-				else if (bsp) /* allow soft breaks */
-				{
-					int this_brk_cls = ucdn_get_resolved_linebreak_class(c);
-					if (this_brk_cls < UCDN_LINEBREAK_CLASS_RI)
+					p += n;
+					if (fz_isletter_or_apos(c))
 					{
-						int brk = pairbrk[g->last_brk_cls][this_brk_cls];
-
-						/* we handle spaces elsewhere, so ignore these classes */
-						if (brk == '@') brk = '^';
-						if (brk == '#') brk = '^';
-						if (brk == '%') brk = '^';
-
-						if (brk == '_')
+						while (p < text)
 						{
-							if (mark != prev)
-								add_flow_word(ctx, pool, flow, box, mark, prev, lang);
-							add_flow_sbreak(ctx, pool, flow, box);
-							mark = prev;
+							n = fz_chartorune(&c, p);
+							if (!fz_isletter_or_apos(c))
+								break;
+							p += n;
 						}
-
-						g->last_brk_cls = this_brk_cls;
+						generate_text_run_with_hyphens(ctx, box, flow, mark, p, lang, hyph, g);
 					}
+					else
+					{
+						while (p < text)
+						{
+							n = fz_chartorune(&c, p);
+							if (fz_isletter_or_apos(c))
+								break;
+							p += n;
+						}
+						generate_text_run(ctx, box, flow, mark, p, lang, g);
+					}
+					mark = p;
 				}
 			}
-			if (mark != text)
-				add_flow_word(ctx, pool, flow, box, mark, text, lang);
+			else
+			{
+				generate_text_run(ctx, box, flow, mark, text, lang, g);
+			}
 
 			g->at_bol = 0;
 		}
@@ -476,6 +661,7 @@ static fz_image *load_html_image(fz_context *ctx, fz_archive *zip, const char *b
 			fz_strlcat(path, "/", sizeof path);
 			fz_strlcat(path, src, sizeof path);
 			fz_urldecode(path);
+			fz_cleanname(path);
 			buf = fz_read_archive_entry(ctx, zip, path);
 		}
 #if FZ_ENABLE_SVG
@@ -488,7 +674,10 @@ static fz_image *load_html_image(fz_context *ctx, fz_archive *zip, const char *b
 	fz_always(ctx)
 		fz_drop_buffer(ctx, buf);
 	fz_catch(ctx)
+	{
+		fz_ignore_error(ctx);
 		fz_warn(ctx, "html: cannot load image src='%s'", src);
+	}
 
 	return img;
 }
@@ -501,7 +690,10 @@ static fz_image *load_svg_image(fz_context *ctx, fz_archive *zip, const char *ba
 	fz_try(ctx)
 		img = fz_new_image_from_svg_xml(ctx, xmldoc, node, base_uri, zip);
 	fz_catch(ctx)
+	{
+		fz_ignore_error(ctx);
 		fz_warn(ctx, "html: cannot load embedded svg document");
+	}
 #endif
 	return img;
 }
@@ -617,17 +809,30 @@ static fz_html_box *new_box(fz_context *ctx, struct genstate *g, fz_xml *node, i
 	box->type = type;
 	box->is_first_flow = 0;
 	box->markup_dir = g->markup_dir;
-	box->structure = 0;
+	box->heading = 0;
 	box->list_item = 0;
+
+#ifdef DEBUG_HTML_SEQ
+	{
+		static int seq = 0;
+		box->seq = seq++;
+	}
+#endif
 
 	box->style = fz_css_enlist(ctx, style, &g->styles, g->pool);
 
-#ifndef NDEBUG
 	if (tag)
-		box->tag = fz_pool_strdup(ctx, g->pool, tag);
+	{
+		box->tag = find_known_html_tag(tag);
+		if (!box->tag && g->is_fb2)
+			box->tag = find_known_fb2_tag(tag);
+		if (!box->tag)
+			box->tag = fz_pool_strdup(ctx, g->pool, tag);
+	}
 	else
+	{
 		box->tag = "#anon";
-#endif
+	}
 
 	if (id)
 		box->id = fz_pool_strdup(ctx, g->pool, id);
@@ -693,7 +898,7 @@ static fz_html_box *find_table_row_context(fz_context *ctx, fz_html_box *box)
 	if (look)
 		return look;
 	fz_warn(ctx, "table-row not inside table element");
-	return box;
+	return NULL;
 }
 
 static fz_html_box *find_table_cell_context(fz_context *ctx, fz_html_box *box)
@@ -704,7 +909,7 @@ static fz_html_box *find_table_cell_context(fz_context *ctx, fz_html_box *box)
 	if (look)
 		return look;
 	fz_warn(ctx, "table-cell not inside table-row element");
-	return box;
+	return NULL;
 }
 
 static fz_html_box *find_inline_context(fz_context *ctx, struct genstate *g, fz_html_box *box)
@@ -739,6 +944,104 @@ static fz_html_box *find_inline_context(fz_context *ctx, struct genstate *g, fz_
 }
 
 static void gen2_children(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *root_node, fz_css_match *root_match);
+
+static void
+apply_attributes_as_styles(fz_context *ctx, fz_css_style *style, fz_xml *node)
+{
+	const char *att;
+	const char *tag = fz_xml_tag(node);
+
+	if (tag == NULL)
+		return; /* No tag -> no attributes. */
+
+	if (!strcmp(tag, "canvas") ||
+		!strcmp(tag, "embed") ||
+		!strcmp(tag, "iframe") ||
+		!strcmp(tag, "img") ||
+		!strcmp(tag, "input") ||
+		!strcmp(tag, "object") ||
+		!strcmp(tag, "video"))
+	{
+		att = fz_xml_att(node, "width");
+		if (att)
+		{
+			style->width.value = fz_atof(att);
+			if (strchr(att,'%'))
+				style->width.unit = N_PERCENT;
+			else
+				style->width.unit = N_LENGTH;
+		}
+
+		att = fz_xml_att(node, "height");
+		if (att)
+		{
+			style->height.value = fz_atof(att);
+			if (strchr(att,'%'))
+				style->height.unit = N_PERCENT;
+			else
+				style->height.unit = N_LENGTH;
+		}
+	}
+
+	att = fz_xml_att(node, "valign");
+	if (!att)
+	{}
+	else if (!strcmp(att, "top"))
+		style->vertical_align = VA_TOP;
+	else if (!strcmp(att, "middle"))
+		style->vertical_align = VA_MIDDLE;
+	else if (!strcmp(att, "bottom"))
+		style->vertical_align = VA_BOTTOM;
+	else if (!strcmp(att, "baseline"))
+		style->vertical_align = VA_BASELINE;
+
+	if (!strcmp(tag, "td") ||
+		!strcmp(tag, "th"))
+	{
+		att = fz_xml_att(node, "rowspan");
+		if (att)
+		{
+			int i = fz_atoi(att);
+			style->rowspan = fz_clampi(i, 1, 1000);
+		}
+
+		att = fz_xml_att(node, "colspan");
+		if (att)
+		{
+			int i = fz_atoi(att);
+			style->colspan = fz_clampi(i, 1, 1000);
+		}
+	}
+
+	/* FIXME: We probably need to vary this based on node type;
+	 * for images, it'd need to be "float:left" etc. */
+	att = fz_xml_att(node, "align");
+	if (!att)
+	{}
+	else if (!strcmp(att, "left"))
+		style->text_align = TA_LEFT;
+	else if (!strcmp(att, "right"))
+		style->text_align = TA_RIGHT;
+	else if (!strcmp(att, "center"))
+		style->text_align = TA_CENTER;
+	else if (!strcmp(att, "justify"))
+		style->text_align = TA_JUSTIFY;
+
+	att = fz_xml_att(node, "bgcolor");
+	if (att)
+		style->background_color = fz_css_color_from_string(att);
+
+	att = fz_xml_att(node, "border");
+	if (att)
+	{
+		style->border_width[3].unit = style->border_width[2].unit = style->border_width[1].unit = style->border_width[0].unit = N_LENGTH;
+		style->border_width[3].value = style->border_width[2].value = style->border_width[1].value = style->border_width[0].value = fz_atof(att);
+	}
+
+	att = fz_xml_att(node, "hidden");
+	if(att)
+		style->visibility = V_HIDDEN;
+}
 
 static void gen2_text(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node)
 {
@@ -823,6 +1126,49 @@ static fz_html_box *gen2_block(fz_context *ctx, struct genstate *g, fz_html_box 
 	return this_box;
 }
 
+static void
+push_colstyle(fz_context *ctx, table_styles *ts, col_style cs)
+{
+	if (ts->ncols == ts->maxcols)
+	{
+		int newmax = ts->maxcols * 2;
+		if (newmax == 0)
+			newmax = 8;
+		ts->styles = fz_realloc(ctx, ts->styles, sizeof(ts->styles[0]) * newmax);
+		ts->maxcols = newmax;
+	}
+
+	ts->styles[ts->ncols++] = cs;
+}
+
+static void gen2_col(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node, fz_css_match *match)
+{
+	const char *span = fz_xml_att(node, "span");
+	col_style cs = { 0 };
+	int i;
+	int n = span ? fz_atoi(span) : 1;
+	if (n < 1)
+		n = 1;
+
+	/* Get the col styles. */
+	fz_css_colstyle(&cs, match);
+
+	/* FIXME: width attr ? */
+
+	for (i = 0; i < n; i++)
+		push_colstyle(ctx, &g->tab_styles, cs);
+}
+
+/* All this does is give us a warning if we fail to be in a table. */
+static void gen2_colgroup(fz_context *ctx, fz_html_box *root_box)
+{
+	fz_html_box *look = root_box;
+	while (look && look->type != BOX_TABLE)
+		look = look->up;
+	if (!look)
+		fz_warn(ctx, "colgroup not inside table element");
+}
+
 static fz_html_box *gen2_table(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node, fz_css_style *style)
 {
 	fz_html_box *this_box;
@@ -834,19 +1180,64 @@ static fz_html_box *gen2_table(fz_context *ctx, struct genstate *g, fz_html_box 
 
 static fz_html_box *gen2_table_row(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node, fz_css_style *style)
 {
-	fz_html_box *this_box;
-	root_box = find_table_row_context(ctx, root_box);
+	fz_html_box *this_box, *table_box;
+
+	table_box = find_table_row_context(ctx, root_box);
+	if (!table_box)
+		return gen2_block(ctx, g, root_box, node, style);
+
 	this_box = new_box(ctx, g, node, BOX_TABLE_ROW, style);
-	append_box(ctx, root_box, this_box);
+	append_box(ctx, table_box, this_box);
+	g->col_num = 0;
 	return this_box;
 }
 
-static fz_html_box *gen2_table_cell(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node, fz_css_style *style)
+static fz_html_box *gen2_table_cell(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node, fz_css_style *style, fz_css_match *root_match)
 {
-	fz_html_box *this_box;
-	root_box = find_table_cell_context(ctx, root_box);
+	fz_html_box *this_box, *row_box;
+	fz_css_style style2;
+	fz_css_match match;
+
+	row_box = find_table_cell_context(ctx, root_box);
+	if (!row_box)
+		return gen2_block(ctx, g, root_box, node, style);
+
+	fz_match_css(ctx, &match, root_match, g->css, node);
+	fz_apply_css_style(ctx, g->set, style, &match);
+	if (g->col_num < g->tab_styles.ncols)
+	{
+		/* Make a local copy of the style, and overlay anything onto it from col. */
+		col_style *cs = &g->tab_styles.styles[g->col_num];
+		style2 = *style;
+		style = &style2;
+		if (cs->has_bg_col)
+			style->background_color = cs->background_color;
+		if (cs->has_border_col & 1)
+			style->border_color[0] = cs->border_color[0];
+		if (cs->has_border_col & 2)
+			style->border_color[1] = cs->border_color[1];
+		if (cs->has_border_col & 4)
+			style->border_color[2] = cs->border_color[2];
+		if (cs->has_border_col & 8)
+			style->border_color[3] = cs->border_color[3];
+		if (cs->has_border_width & 1)
+			style->border_width[0] = cs->border_width[0];
+		if (cs->has_border_width & 2)
+			style->border_width[1] = cs->border_width[1];
+		if (cs->has_border_width & 4)
+			style->border_width[2] = cs->border_width[2];
+		if (cs->has_border_width & 8)
+			style->border_width[3] = cs->border_width[3];
+		if (cs->has_visibility)
+			style->visibility = cs->visibility;
+		if (cs->has_width)
+			style->width = cs->width;
+	}
+	apply_attributes_as_styles(ctx, style, node);
+	g->col_num++;
+
 	this_box = new_box(ctx, g, node, BOX_TABLE_CELL, style);
-	append_box(ctx, root_box, this_box);
+	append_box(ctx, row_box, this_box);
 	return this_box;
 }
 
@@ -920,65 +1311,32 @@ static void gen2_image_svg(fz_context *ctx, struct genstate *g, fz_html_box *roo
 	gen2_image_common(ctx, g, root_box, node, img, display, style);
 }
 
-static int
-structure_from_tag(const char *tag, struct genstate *g)
+static int get_heading_from_tag(fz_context *ctx, struct genstate *g, const char *tag)
 {
-	if (tag == NULL)
-		return FZ_HTML_STRUCT_UNKNOWN;
-	if (!strcmp(tag, "title") || !strcmp(tag, "subtitle"))
+	if (tag[0] == 'h' && tag[1] != 0 && tag[2] == 0)
 	{
-		if (!g->is_fb2)
-			return FZ_HTML_STRUCT_UNKNOWN;
-		return g->section_depth ? (FZ_HTML_STRUCT_H1 - 1 + fz_mini(g->section_depth, 6)) : FZ_HTML_STRUCT_UNKNOWN;
+		switch (tag[1])
+		{
+		case '1': return 1;
+		case '2': return 2;
+		case '3': return 3;
+		case '4': return 4;
+		case '5': return 5;
+		case '6': return 6;
+		}
 	}
-	else if (!strcmp(tag, "body"))
-		return FZ_HTML_STRUCT_BODY;
-	else if (!strcmp(tag, "div"))
-		return FZ_HTML_STRUCT_DIV;
-	else if (!strcmp(tag, "span"))
-		return FZ_HTML_STRUCT_SPAN;
-	else if (!strcmp(tag, "blockquote"))
-		return FZ_HTML_STRUCT_BLOCKQUOTE;
-	else if (!strcmp(tag, "p"))
-		return FZ_HTML_STRUCT_P;
-	else if (!strcmp(tag, "h1"))
-		return FZ_HTML_STRUCT_H1;
-	else if (!strcmp(tag, "h2"))
-		return FZ_HTML_STRUCT_H2;
-	else if (!strcmp(tag, "h3"))
-		return FZ_HTML_STRUCT_H3;
-	else if (!strcmp(tag, "h4"))
-		return FZ_HTML_STRUCT_H4;
-	else if (!strcmp(tag, "h5"))
-		return FZ_HTML_STRUCT_H5;
-	else if (!strcmp(tag, "h6"))
-		return FZ_HTML_STRUCT_H6;
-	else if (!strcmp(tag, "dl") || !strcmp(tag, "ul") || !strcmp(tag, "ol"))
-		return FZ_HTML_STRUCT_L;
-	else if (!strcmp(tag, "li") || !strcmp(tag, "dd") || !strcmp(tag, "dt"))
-		return FZ_HTML_STRUCT_LI;
-	else if (!strcmp(tag, "table"))
-		return FZ_HTML_STRUCT_TABLE;
-	else if (!strcmp(tag, "tr"))
-		return FZ_HTML_STRUCT_TR;
-	else if (!strcmp(tag, "th"))
-		return FZ_HTML_STRUCT_TH;
-	else if (!strcmp(tag, "td"))
-		return FZ_HTML_STRUCT_TD;
-	else if (!strcmp(tag, "thead"))
-		return FZ_HTML_STRUCT_THEAD;
-	else if (!strcmp(tag, "tbody"))
-		return FZ_HTML_STRUCT_TBODY;
-	else if (!strcmp(tag, "tfoot"))
-		return FZ_HTML_STRUCT_TFOOT;
-
-	return FZ_HTML_STRUCT_UNKNOWN;
+	if (g->is_fb2)
+	{
+		if (!strcmp(tag, "title") || !strcmp(tag, "subtitle"))
+			return fz_mini(g->section_depth, 6);
+	}
+	return 0;
 }
 
 static void gen2_tag(fz_context *ctx, struct genstate *g, fz_html_box *root_box, fz_xml *node,
 	fz_css_match *match, int display, fz_css_style *style)
 {
-	fz_html_box *this_box;
+	fz_html_box *this_box = NULL;
 	const char *tag;
 	const char *lang_att;
 	const char *dir_att;
@@ -993,6 +1351,7 @@ static void gen2_tag(fz_context *ctx, struct genstate *g, fz_html_box *root_box,
 	tag = fz_xml_tag(node);
 
 	dir_att = fz_xml_att(node, "dir");
+	g->markup_dir = style->direction;
 	if (dir_att)
 	{
 		if (!strcmp(dir_att, "auto"))
@@ -1001,8 +1360,6 @@ static void gen2_tag(fz_context *ctx, struct genstate *g, fz_html_box *root_box,
 			g->markup_dir = FZ_BIDI_RTL;
 		else if (!strcmp(dir_att, "ltr"))
 			g->markup_dir = FZ_BIDI_LTR;
-		else
-			g->markup_dir = DEFAULT_DIR;
 	}
 
 	lang_att = fz_xml_att(node, "lang");
@@ -1018,13 +1375,29 @@ static void gen2_tag(fz_context *ctx, struct genstate *g, fz_html_box *root_box,
 
 	case DIS_BLOCK:
 		this_box = gen2_block(ctx, g, root_box, node, style);
-		this_box->structure = structure_from_tag(tag, g);
+		this_box->heading = get_heading_from_tag(ctx, g, tag);
 		break;
 
 	case DIS_LIST_ITEM:
 		this_box = gen2_block(ctx, g, root_box, node, style);
 		this_box->list_item = ++g->list_counter;
 		break;
+
+	// TODO: https://www.w3.org/TR/CSS2/tables.html#anonymous-boxes
+	//
+	// The table generation code should insert and create anonymous boxes
+	// for any missing child/parent elements.
+	//
+	// MISSING CHILDREN:
+	// 1: Wrap consecutive BLOCK found in a TABLE in an anon TABLE_ROW.
+	// 2: Wrap consecutive BLOCK found in a TABLE_ROW in an anon TABLE_CELL.
+	//
+	// MISSING PARENTS:
+	// 1: Wrap consecutive TABLE_CELL found outside TABLE_ROW in an anon TABLE_ROW
+	// 2: Wrap consecutive TABLE_ROW found outside TABLE in an anon TABLE
+	//
+	// For now we ignore this and treat any such elements that are out of
+	// context as plain block elements.
 
 	case DIS_TABLE:
 		this_box = gen2_table(ctx, g, root_box, node, style);
@@ -1037,7 +1410,13 @@ static void gen2_tag(fz_context *ctx, struct genstate *g, fz_html_box *root_box,
 		this_box = gen2_table_row(ctx, g, root_box, node, style);
 		break;
 	case DIS_TABLE_CELL:
-		this_box = gen2_table_cell(ctx, g, root_box, node, style);
+		this_box = gen2_table_cell(ctx, g, root_box, node, style, match);
+		break;
+
+	case DIS_TABLE_COLGROUP:
+		gen2_colgroup(ctx, root_box);
+		// no box for colgroup elements.
+		this_box = root_box;
 		break;
 
 	case DIS_INLINE:
@@ -1046,19 +1425,42 @@ static void gen2_tag(fz_context *ctx, struct genstate *g, fz_html_box *root_box,
 		break;
 	}
 
-	if (!strcmp(tag, "ol"))
+	if (this_box == NULL)
+		return;
+
+	if (tag && (!strcmp(tag, "ol") || !strcmp(tag, "ul") || !strcmp(tag, "dl")))
 	{
 		int save_list_counter = g->list_counter;
 		g->list_counter = 0;
 		gen2_children(ctx, g, this_box, node, match);
 		g->list_counter = save_list_counter;
 	}
-	else if (!strcmp(tag, "section"))
+	else if (tag && !strcmp(tag, "section"))
 	{
 		int save_section_depth = g->section_depth;
 		g->section_depth++;
 		gen2_children(ctx, g, this_box, node, match);
 		g->section_depth = save_section_depth;
+	}
+	else if (display == DIS_TABLE)
+	{
+		table_styles saved_styles = g->tab_styles;
+		int saved_col_num = g->col_num;
+		fz_try(ctx)
+		{
+			g->tab_styles.maxcols = 0;
+			g->tab_styles.ncols = 0;
+			g->tab_styles.styles = NULL;
+			gen2_children(ctx, g, this_box, node, match);
+		}
+		fz_always(ctx)
+		{
+			drop_table_styles(ctx, &g->tab_styles);
+			g->tab_styles = saved_styles;
+			g->col_num = saved_col_num;
+		}
+		fz_catch(ctx)
+			fz_rethrow(ctx);
 	}
 	else
 	{
@@ -1085,6 +1487,7 @@ static void gen2_children(fz_context *ctx, struct genstate *g, fz_html_box *root
 		{
 			fz_match_css(ctx, &match, root_match, g->css, node);
 			fz_apply_css_style(ctx, g->set, &style, &match);
+			apply_attributes_as_styles(ctx, &style, node);
 			display = fz_get_css_match_display(&match);
 			if (tag[0]=='b' && tag[1]=='r' && tag[2]==0)
 			{
@@ -1102,6 +1505,10 @@ static void gen2_children(fz_context *ctx, struct genstate *g, fz_html_box *root
 			{
 				gen2_image_svg(ctx, g, root_box, node, display, &style);
 			}
+			else if (tag[0]=='c' && tag[1]=='o' && tag[2]=='l' && tag[3]==0)
+			{
+				gen2_col(ctx, g, root_box, node, &match);
+			}
 			else
 			{
 				gen2_tag(ctx, g, root_box, node, &match, display, &style);
@@ -1112,31 +1519,6 @@ static void gen2_children(fz_context *ctx, struct genstate *g, fz_html_box *root
 			gen2_text(ctx, g, root_box, node);
 		}
 	}
-}
-
-static char *concat_text(fz_context *ctx, fz_xml *root)
-{
-	fz_xml *node;
-	size_t i = 0, n = 1;
-	char *s;
-	for (node = fz_xml_down(root); node; node = fz_xml_next(node))
-	{
-		const char *text = fz_xml_text(node);
-		n += text ? strlen(text) : 0;
-	}
-	s = Memento_label(fz_malloc(ctx, n), "concat_html");
-	for (node = fz_xml_down(root); node; node = fz_xml_next(node))
-	{
-		const char *text = fz_xml_text(node);
-		if (text)
-		{
-			n = strlen(text);
-			memcpy(s+i, text, n);
-			i += n;
-		}
-	}
-	s[i] = 0;
-	return s;
 }
 
 static void
@@ -1166,7 +1548,11 @@ html_load_css_link(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, cons
 	fz_always(ctx)
 		fz_drop_buffer(ctx, buf);
 	fz_catch(ctx)
+	{
+		fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+		fz_report_error(ctx);
 		fz_warn(ctx, "ignoring stylesheet %s", path);
+	}
 }
 
 static void
@@ -1196,15 +1582,20 @@ html_load_css(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const cha
 		}
 		else if (fz_xml_is_tag(node, "style"))
 		{
-			char *s = concat_text(ctx, node);
+			char *s = fz_new_text_from_xml(ctx, node);
 			fz_try(ctx)
 			{
 				fz_parse_css(ctx, css, s, "<style>");
 				fz_add_css_font_faces(ctx, set, zip, base_uri, css);
 			}
+			fz_always(ctx)
+				fz_free(ctx, s);
 			fz_catch(ctx)
+			{
+				fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+				fz_report_error(ctx);
 				fz_warn(ctx, "ignoring inline stylesheet");
-			fz_free(ctx, s);
+			}
 		}
 	}
 }
@@ -1218,14 +1609,18 @@ fb2_load_css(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 	stylesheet = fz_xml_find_down(fictionbook, "stylesheet");
 	if (stylesheet)
 	{
-		char *s = concat_text(ctx, stylesheet);
+		char *s = fz_new_text_from_xml(ctx, stylesheet);
 		fz_try(ctx)
 		{
 			fz_parse_css(ctx, css, s, "<stylesheet>");
 			fz_add_css_font_faces(ctx, set, zip, base_uri, css);
 		}
 		fz_catch(ctx)
+		{
+			fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+			fz_report_error(ctx);
 			fz_warn(ctx, "ignoring inline stylesheet");
+		}
 		fz_free(ctx, s);
 	}
 }
@@ -1255,7 +1650,7 @@ load_fb2_images(fz_context *ctx, fz_xml *root)
 
 		fz_try(ctx)
 		{
-			b64 = concat_text(ctx, binary);
+			b64 = fz_new_text_from_xml(ctx, binary);
 			buf = fz_new_buffer_from_base64(ctx, b64, strlen(b64));
 			img = fz_new_image_from_buffer(ctx, buf);
 		}
@@ -1339,7 +1734,7 @@ detect_flow_directionality(fz_context *ctx, fz_pool *pool, uni_buf *buffer, fz_b
 
 	while (end)
 	{
-		int level = end->bidi_level;
+		unsigned int level = end->bidi_level;
 
 		/* Gather the text from the flow up into a single buffer (at
 		 * least, as much of it as has the same direction markup). */
@@ -1446,6 +1841,7 @@ parse_to_xml(fz_context *ctx, fz_buffer *buf, int try_xml, int try_html5)
 		{
 			if (fz_caught(ctx) == FZ_ERROR_SYNTAX)
 			{
+				fz_report_error(ctx);
 				fz_warn(ctx, "syntax error in XHTML; retrying using HTML5 parser");
 				xml = fz_parse_xml_from_html5(ctx, buf);
 			}
@@ -1464,6 +1860,48 @@ parse_to_xml(fz_context *ctx, fz_buffer *buf, int try_xml, int try_html5)
 	return xml;
 }
 
+static void move_background_color_style_up(fz_context *ctx, struct genstate *g, fz_html_box *root, fz_html_box *from)
+{
+	fz_css_color transparent = { 0, 0, 0, 0 };
+	fz_css_style s1, s2;
+	memcpy(&s1, root->style, sizeof s1);
+	memcpy(&s2, from->style, sizeof s2);
+	s1.background_color = s2.background_color;
+	s2.background_color = transparent;
+	root->style = fz_css_enlist(ctx, &s1, &g->styles, g->pool);
+	from->style = fz_css_enlist(ctx, &s2, &g->styles, g->pool);
+}
+
+static void move_background_color_up(fz_context *ctx, struct genstate *g, fz_html_box *root)
+{
+	fz_html_box *html, *body;
+
+	if (root->style->background_color.a != 0)
+	{
+		return;
+	}
+
+	html = root->down;
+	if (html && !strcmp(html->tag, "html"))
+	{
+		if (html->style->background_color.a != 0)
+		{
+			move_background_color_style_up(ctx, g, root, html);
+			return;
+		}
+
+		body = html->down;
+		if (body && !strcmp(body->tag, "body"))
+		{
+			if (body->style->background_color.a != 0)
+			{
+				move_background_color_style_up(ctx, g, root, body);
+				return;
+			}
+		}
+	}
+}
+
 static void
 xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char *base_uri, const char *user_css,
 	fz_xml_doc *xml, fz_html_tree *tree, char **rtitle, int try_fictionbook, int is_mobi)
@@ -1471,7 +1909,7 @@ xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 	fz_xml *root, *node;
 	char *title;
 
-	fz_css_match match;
+	fz_css_match root_match, match;
 	struct genstate g = {0};
 
 	g.pool = NULL;
@@ -1496,14 +1934,7 @@ xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 		*rtitle = NULL;
 
 	root = fz_xml_root(g.xml);
-
-	fz_try(ctx)
-		g.css = fz_new_css(ctx);
-	fz_catch(ctx)
-	{
-		fz_drop_xml(ctx, g.xml);
-		fz_rethrow(ctx);
-	}
+	g.css = fz_new_css(ctx);
 
 #ifndef NDEBUG
 	if (fz_atoi(getenv("FZ_DEBUG_XML")))
@@ -1544,8 +1975,15 @@ xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 	}
 	fz_catch(ctx)
 	{
+		drop_table_styles(ctx, &g.tab_styles);
+		fz_drop_tree(ctx, g.images, (void(*)(fz_context*,void*))fz_drop_image);
+		fz_drop_css(ctx, g.css);
 		fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
-		fz_warn(ctx, "ignoring styles due to errors: %s", fz_caught_message(ctx));
+		fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+		fz_report_error(ctx);
+		fz_warn(ctx, "ignoring styles");
+		g.css = fz_new_css(ctx);
+		g.images = NULL;
 	}
 
 #ifndef NDEBUG
@@ -1556,24 +1994,31 @@ xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 	fz_try(ctx)
 	{
 		fz_css_style style;
+		int display;
 
-		fz_match_css_at_page(ctx, &match, g.css);
-		fz_apply_css_style(ctx, g.set, &style, &match);
+		fz_match_css_at_page(ctx, &root_match, g.css);
+		fz_apply_css_style(ctx, g.set, &style, &root_match);
 
 		g.pool = tree->pool;
-		g.markup_dir = DEFAULT_DIR;
+		g.markup_dir = style.direction;
 		g.markup_lang = FZ_LANG_UNSET;
 
+		// Create root node
 		tree->root = new_box(ctx, &g, NULL, BOX_BLOCK, &style);
 		// TODO: transfer page margins out of this hacky box
 
-		gen2_children(ctx, &g, tree->root, root, &match);
-
+		tree->root->tag = ":root";
 		tree->root->s.layout.em = 0;
 		tree->root->s.layout.x = 0;
 		tree->root->s.layout.y = 0;
 		tree->root->s.layout.w = 0;
 		tree->root->s.layout.b = 0;
+
+		// Create document node (html).
+		fz_match_css(ctx, &match, &root_match, g.css, root);
+		fz_apply_css_style(ctx, g.set, &style, &match);
+		display = fz_get_css_match_display(&match);
+		gen2_tag(ctx, &g, tree->root, root, &match, display, &style);
 
 		detect_directionality(ctx, g.pool, tree->root);
 
@@ -1601,10 +2046,14 @@ xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 				if (title)
 					*rtitle = fz_pool_strdup(ctx, g.pool, title);
 			}
+
+			// Move html or body background-color to :root.
+			move_background_color_up(ctx, &g, tree->root);
 		}
 	}
 	fz_always(ctx)
 	{
+		drop_table_styles(ctx, &g.tab_styles);
 		fz_drop_tree(ctx, g.images, (void(*)(fz_context*,void*))fz_drop_image);
 		fz_drop_css(ctx, g.css);
 	}
@@ -1615,20 +2064,18 @@ xml_to_boxes(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char
 			fz_free(ctx, *rtitle);
 			*rtitle = NULL;
 		}
-		/* Dropping the tree works regardless of whether the tree is part of an fz_html or not. */
-		fz_drop_html_tree(ctx, tree);
 		fz_rethrow(ctx);
 	}
 }
 
 static const char *mobi_font_size[7] = {
-	"8pt",
-	"10pt",
-	"12pt",
-	"14pt",
-	"16pt",
-	"18pt",
-	"20pt",
+	"0.67em",
+	"0.83em",
+	"1em",
+	"1.17em",
+	"1.33em",
+	"1.5em",
+	"1.67em",
 };
 
 static void
@@ -1728,7 +2175,7 @@ fz_parse_html_tree(fz_context *ctx,
 	xml = parse_to_xml(ctx, buf, try_xml, try_html5);
 
 	if (patch_mobi)
-		patch_mobi_html(ctx, xml->u.doc.pool, xml);
+		patch_mobi_html(ctx, xml->u.doc.pool, fz_xml_root(xml));
 
 	fz_try(ctx)
 		xml_to_boxes(ctx, set, zip, base_uri, user_css, xml, tree, rtitle, try_fictionbook, patch_mobi);
@@ -1762,8 +2209,8 @@ fz_new_html_tree_of_size(fz_context *ctx, size_t size, fz_store_drop_fn *drop)
 	return tree;
 }
 
-static fz_html *
-fz_parse_html_imp(fz_context *ctx,
+fz_html *
+fz_parse_html(fz_context *ctx,
 	fz_html_font_set *set, fz_archive *zip, const char *base_uri, fz_buffer *buf, const char *user_css,
 	int try_xml, int try_html5, int patch_mobi)
 {
@@ -1807,6 +2254,8 @@ warn_to_buffer(void *user, const char *message)
 	fz_catch(ctx)
 	{
 		/* Silently swallow the error. */
+		fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+		fz_report_error(ctx);
 	}
 }
 
@@ -1873,31 +2322,10 @@ fz_new_story(fz_context *ctx, fz_buffer *buf, const char *user_css, float em, fz
 }
 
 fz_html *
-fz_parse_fb2(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char *base_uri, fz_buffer *buf, const char *user_css)
-{
-	/* parse only as XML */
-	return fz_parse_html_imp(ctx, set, zip, base_uri, buf, user_css, 1, 0, 0);
-}
-
-fz_html *
-fz_parse_html5(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char *base_uri, fz_buffer *buf, const char *user_css)
-{
-	/* parse only as HTML5 */
-	return fz_parse_html_imp(ctx, set, zip, base_uri, buf, user_css, 0, 1, 0);
-}
-
-fz_html *
 fz_parse_xhtml(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char *base_uri, fz_buffer *buf, const char *user_css)
 {
 	/* try as XML first, fall back to HTML5 */
-	return fz_parse_html_imp(ctx, set, zip, base_uri, buf, user_css, 1, 1, 0);
-}
-
-fz_html *
-fz_parse_mobi(fz_context *ctx, fz_html_font_set *set, fz_archive *zip, const char *base_uri, fz_buffer *buf, const char *user_css)
-{
-	/* try as XML first, fall back to HTML5 */
-	return fz_parse_html_imp(ctx, set, zip, base_uri, buf, user_css, 1, 1, 1);
+	return fz_parse_html(ctx, set, zip, base_uri, buf, user_css, 1, 1, 0);
 }
 
 static void indent(int level)
@@ -1945,6 +2373,7 @@ fz_debug_html_flow(fz_context *ctx, fz_html_flow *flow, int level)
 		case FLOW_IMAGE: printf("image"); break;
 		case FLOW_ANCHOR: printf("anchor"); break;
 		}
+		printf(" script=%d", flow->script);
 		// printf(" y=%g x=%g w=%g", flow->y, flow->x, flow->w);
 		if (flow->type == FLOW_IMAGE)
 			printf(" h=%g", flow->h);
@@ -1960,105 +2389,45 @@ fz_debug_html_flow(fz_context *ctx, fz_html_flow *flow, int level)
 	}
 }
 
-const char *
-fz_html_structure_to_string(int structure)
+fz_structure fz_html_tag_to_structure(const char *tag)
 {
-	switch (structure)
-	{
-	case FZ_HTML_STRUCT_UNKNOWN:
-		return "unknown";
-	case FZ_HTML_STRUCT_BODY:
-		return "body";
-	case FZ_HTML_STRUCT_DIV:
-		return "div";
-	case FZ_HTML_STRUCT_SPAN:
-		return "span";
-	case FZ_HTML_STRUCT_BLOCKQUOTE:
-		return "blockquote";
-	case FZ_HTML_STRUCT_P:
-		return "p";
-	case FZ_HTML_STRUCT_H1:
-		return "h1";
-	case FZ_HTML_STRUCT_H2:
-		return "h2";
-	case FZ_HTML_STRUCT_H3:
-		return "h3";
-	case FZ_HTML_STRUCT_H4:
-		return "h4";
-	case FZ_HTML_STRUCT_H5:
-		return "h5";
-	case FZ_HTML_STRUCT_H6:
-		return "h6";
-	case FZ_HTML_STRUCT_L:
-		return "l";
-	case FZ_HTML_STRUCT_LI:
-		return "li";
-	case FZ_HTML_STRUCT_TABLE:
-		return "table";
-	case FZ_HTML_STRUCT_TR:
-		return "tr";
-	case FZ_HTML_STRUCT_TH:
-		return "th";
-	case FZ_HTML_STRUCT_TD:
-		return "td";
-	case FZ_HTML_STRUCT_THEAD:
-		return "thead";
-	case FZ_HTML_STRUCT_TBODY:
-		return "tbody";
-	case FZ_HTML_STRUCT_TFOOT:
-		return "tfoot";
-	default:
-		return "????";
-	}
-
+	if (!strcmp(tag, "body")) return FZ_STRUCTURE_DOCUMENT;
+	if (!strcmp(tag, "div")) return FZ_STRUCTURE_DIV;
+	if (!strcmp(tag, "span")) return FZ_STRUCTURE_SPAN;
+	if (!strcmp(tag, "blockquote")) return FZ_STRUCTURE_BLOCKQUOTE;
+	if (!strcmp(tag, "p")) return FZ_STRUCTURE_P;
+	if (!strcmp(tag, "h1")) return FZ_STRUCTURE_H1;
+	if (!strcmp(tag, "h2")) return FZ_STRUCTURE_H2;
+	if (!strcmp(tag, "h3")) return FZ_STRUCTURE_H3;
+	if (!strcmp(tag, "h4")) return FZ_STRUCTURE_H4;
+	if (!strcmp(tag, "h5")) return FZ_STRUCTURE_H5;
+	if (!strcmp(tag, "h6")) return FZ_STRUCTURE_H6;
+	if (!strcmp(tag, "ol")) return FZ_STRUCTURE_LIST;
+	if (!strcmp(tag, "ul")) return FZ_STRUCTURE_LIST;
+	if (!strcmp(tag, "dl")) return FZ_STRUCTURE_LIST;
+	if (!strcmp(tag, "li")) return FZ_STRUCTURE_LISTITEM;
+	if (!strcmp(tag, "table")) return FZ_STRUCTURE_TABLE;
+	if (!strcmp(tag, "tr")) return FZ_STRUCTURE_TR;
+	if (!strcmp(tag, "th")) return FZ_STRUCTURE_TH;
+	if (!strcmp(tag, "td")) return FZ_STRUCTURE_TD;
+	if (!strcmp(tag, "thead")) return FZ_STRUCTURE_THEAD;
+	if (!strcmp(tag, "tbody")) return FZ_STRUCTURE_TBODY;
+	if (!strcmp(tag, "tfoot")) return FZ_STRUCTURE_TFOOT;
+	return FZ_STRUCTURE_INVALID;
 }
 
-fz_structure fz_html_structure_to_structure(int s)
+static void fz_debug_css_number(int level, const char *label, fz_css_number number)
 {
-	switch (s)
-	{
-	case FZ_HTML_STRUCT_BODY:
-		return FZ_STRUCTURE_DOCUMENT;
-	case FZ_HTML_STRUCT_DIV:
-		return FZ_STRUCTURE_DIV;
-	case FZ_HTML_STRUCT_SPAN:
-		return FZ_STRUCTURE_SPAN;
-	case FZ_HTML_STRUCT_BLOCKQUOTE:
-		return FZ_STRUCTURE_BLOCKQUOTE;
-	case FZ_HTML_STRUCT_P:
-		return FZ_STRUCTURE_P;
-	case FZ_HTML_STRUCT_H1:
-		return FZ_STRUCTURE_H1;
-	case FZ_HTML_STRUCT_H2:
-		return FZ_STRUCTURE_H2;
-	case FZ_HTML_STRUCT_H3:
-		return FZ_STRUCTURE_H3;
-	case FZ_HTML_STRUCT_H4:
-		return FZ_STRUCTURE_H4;
-	case FZ_HTML_STRUCT_H5:
-		return FZ_STRUCTURE_H5;
-	case FZ_HTML_STRUCT_H6:
-		return FZ_STRUCTURE_H6;
-	case FZ_HTML_STRUCT_L:
-		return FZ_STRUCTURE_LIST;
-	case FZ_HTML_STRUCT_LI:
-		return FZ_STRUCTURE_LISTITEM;
-	case FZ_HTML_STRUCT_TABLE:
-		return FZ_STRUCTURE_TABLE;
-	case FZ_HTML_STRUCT_TR:
-		return FZ_STRUCTURE_TR;
-	case FZ_HTML_STRUCT_TH:
-		return FZ_STRUCTURE_TH;
-	case FZ_HTML_STRUCT_TD:
-		return FZ_STRUCTURE_TD;
-	case FZ_HTML_STRUCT_THEAD:
-		return FZ_STRUCTURE_THEAD;
-	case FZ_HTML_STRUCT_TBODY:
-		return FZ_STRUCTURE_TBODY;
-	case FZ_HTML_STRUCT_TFOOT:
-		return FZ_STRUCTURE_TFOOT;
+	if (number.unit == N_UNDEFINED || number.unit == N_AUTO)
+		return;
+	indent(level+1);
+	printf(">%s: ", label);
+	switch (number.unit) {
 	default:
-		return FZ_STRUCTURE_INVALID;
+	case N_NUMBER: printf("%g (num)\n", number.value); break;
+	case N_LENGTH: printf("%g (len)\n", number.value); break;
+	case N_SCALE: printf("%g (scale)\n", number.value); break;
+	case N_PERCENT: printf("%g%%\n", number.value * 0.01f); break;
 	}
 }
 
@@ -2069,6 +2438,9 @@ fz_debug_html_box(fz_context *ctx, fz_html_box *box, int level)
 	{
 		indent(level);
 		printf("box ");
+#ifdef DEBUG_HTML_SEQ
+		printf("seq=%d ", box->seq);
+#endif
 		switch (box->type) {
 		case BOX_BLOCK: printf("block"); break;
 		case BOX_FLOW: printf("flow"); break;
@@ -2078,14 +2450,12 @@ fz_debug_html_box(fz_context *ctx, fz_html_box *box, int level)
 		case BOX_TABLE_CELL: printf("table-cell"); break;
 		}
 
-#ifndef NDEBUG
 		printf(" <%s>", box->tag);
-#endif
 		// printf(" em=%g", box->em);
 		// printf(" x=%g y=%g w=%g b=%g", box->x, box->y, box->w, box->b);
-		if (box->structure != FZ_HTML_STRUCT_UNKNOWN)
-			printf(" struct=(%s)", fz_html_structure_to_string(box->structure));
 
+		if (box->markup_dir == FZ_BIDI_RTL)
+			printf(" rtl");
 		if (box->is_first_flow)
 			printf(" is-first-flow");
 		if (box->list_item)
@@ -2096,14 +2466,44 @@ fz_debug_html_box(fz_context *ctx, fz_html_box *box, int level)
 			printf(" href=(%s)", box->href);
 		printf("\n");
 
-		if (box->type == BOX_BLOCK || box->type == BOX_TABLE) {
-			indent(level+1);
-			printf(">margin=(%g %g %g %g)\n", box->u.block.margin[0], box->u.block.margin[1], box->u.block.margin[2], box->u.block.margin[3]);
-			//indent(level+1);
-			//printf(">padding=(%g %g %g %g)\n", box->u.block.padding[0], box->u.block.padding[1], box->u.block.padding[2], box->u.block.padding[3]);
-			//indent(level+1);
-			//printf(">border=(%g %g %g %g)\n", box->u.block.border[0], box->u.block.border[1], box->u.block.border[2], box->u.block.border[3]);
+		if (box->type == BOX_BLOCK || box->type == BOX_TABLE || box->type == BOX_TABLE_CELL) {
+			if (box->style->background_color.a != 0)
+			{
+				indent(level+1);
+				printf(">background-color=#%02x%02x%02x%02x\n",
+					box->style->background_color.a,
+					box->style->background_color.r,
+					box->style->background_color.g,
+					box->style->background_color.b);
+			}
+			if (box->style->position != POS_STATIC)
+			{
+				indent(level+1);
+				printf(">position: %s\n", box->style->position == POS_RELATIVE ? "relative" :
+					box->style->position == POS_FIXED ? "fixed" : "absolute");
+			}
+			fz_debug_css_number(level, "width", box->style->width);
+			fz_debug_css_number(level, "height", box->style->height);
+			if (box->u.block.margin[0] != 0 || box->u.block.margin[1] != 0 || box->u.block.margin[2] != 0 || box->u.block.margin[3] != 0)
+			{
+				indent(level+1);
+				printf(">margin=(%g %g %g %g)\n", box->u.block.margin[0], box->u.block.margin[1], box->u.block.margin[2], box->u.block.margin[3]);
+			}
+			if (box->u.block.border[0] != 0 || box->u.block.border[1] != 0 || box->u.block.border[2] != 0 || box->u.block.border[3] != 0)
+			{
+				indent(level+1);
+				printf(">border=(%g %g %g %g) #%02x%02x%02x%02x\n",
+					box->u.block.border[0], box->u.block.border[1], box->u.block.border[2], box->u.block.border[3],
+					box->style->border_color->a, box->style->border_color->r, box->style->border_color->g, box->style->border_color->b);
+			}
+			if (box->u.block.padding[0] != 0 || box->u.block.padding[1] != 0 || box->u.block.padding[2] != 0 || box->u.block.padding[3] != 0)
+			{
+				indent(level+1);
+				printf(">padding=(%g %g %g %g)\n", box->u.block.padding[0], box->u.block.padding[1], box->u.block.padding[2], box->u.block.padding[3]);
+			}
 		}
+		indent(level+1);
+		printf(">layout=(%g %g)->(%g %g)\n", box->s.layout.x, box->s.layout.y, box->s.layout.w + box->s.layout.x, box->s.layout.b);
 
 		if (box->down)
 			fz_debug_html_box(ctx, box->down, level + 1);
@@ -2256,11 +2656,11 @@ convert_to_boxes(fz_context *ctx, fz_story *story)
 	{
 		redirect_warnings_to_buffer(ctx, story->warnings, &saved);
 		xml_to_boxes(ctx, story->font_set, story->zip, ".", story->user_css, story->dom, &story->tree, NULL, 0, 0);
-		fz_drop_xml(ctx, story->dom);
-		story->dom = NULL;
 	}
 	fz_always(ctx)
 	{
+		fz_drop_xml(ctx, story->dom);
+		story->dom = NULL;
 		restore_warnings(ctx, &saved);
 	}
 	fz_catch(ctx)
@@ -2268,6 +2668,11 @@ convert_to_boxes(fz_context *ctx, fz_story *story)
 }
 
 int fz_place_story(fz_context *ctx, fz_story *story, fz_rect where, fz_rect *filled)
+{
+	return fz_place_story_flags(ctx, story, where, filled, 0);
+}
+
+int fz_place_story_flags(fz_context *ctx, fz_story *story, fz_rect where, fz_rect *filled, int flags)
 {
 	float w, h;
 
@@ -2289,12 +2694,17 @@ int fz_place_story(fz_context *ctx, fz_story *story, fz_rect where, fz_rect *fil
 	 * the correct struct though! */
 	story->restart_draw.start = story->restart_place.start;
 	story->restart_draw.start_flow = story->restart_place.start_flow;
+	story->restart_draw.start_flags = story->restart_place.start_flags;
 	story->restart_draw.end = NULL;
 	story->restart_draw.end_flow = NULL;
+	story->restart_draw.end_flags = 0;
+	story->restart_draw.reason = FZ_HTML_RESTART_REASON_NONE;
+	story->restart_draw.flags = flags;
 	story->bbox = where;
 	fz_restartable_layout_html(ctx, &story->tree, where.x0, where.y0, w, h, story->em, &story->restart_draw);
 	story->restart_draw.start = story->restart_place.start;
 	story->restart_draw.start_flow = story->restart_place.start_flow;
+	story->restart_draw.start_flags = story->restart_place.start_flags;
 
 	if (filled)
 	{
@@ -2310,7 +2720,11 @@ int fz_place_story(fz_context *ctx, fz_story *story, fz_rect where, fz_rect *fil
 		fz_debug_html(ctx, story->tree.root);
 #endif
 
-	return story->restart_draw.end != NULL;
+	if (story->restart_draw.end == NULL)
+		return FZ_HTML_RESTART_REASON_NONE;
+	if (story->restart_draw.reason == FZ_HTML_RESTART_REASON_LINE_WIDTH)
+		return FZ_HTML_RESTART_REASON_LINE_WIDTH;
+	return FZ_HTML_RESTART_REASON_LINE_HEIGHT;
 }
 
 const char *

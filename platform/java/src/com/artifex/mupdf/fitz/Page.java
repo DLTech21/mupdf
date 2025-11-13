@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -28,6 +28,13 @@ public class Page
 		Context.init();
 	}
 
+	public static final int MEDIA_BOX = 0;
+	public static final int CROP_BOX = 1;
+	public static final int BLEED_BOX = 2;
+	public static final int TRIM_BOX = 3;
+	public static final int ART_BOX = 4;
+	public static final int UNKNOWN_BOX = 5;
+
 	private long pointer;
 
 	protected native void finalize();
@@ -40,7 +47,15 @@ public class Page
 		pointer = p;
 	}
 
-	public native Rect getBounds();
+	private native Rect getBoundsNative(int box);
+
+	public Rect getBounds(int box) {
+		return getBoundsNative(box);
+	}
+
+	public Rect getBounds() {
+		return getBoundsNative(Page.CROP_BOX);
+	}
 
 	public native void run(Device dev, Matrix ctm, Cookie cookie);
 	public native void runPageContents(Device dev, Matrix ctm, Cookie cookie);
@@ -68,7 +83,11 @@ public class Page
 		return toStructuredText(null);
 	}
 
-	public native Quad[][] search(String needle);
+	public native Quad[][] search(String needle, int style);
+	public Quad[][] search(String needle)
+	{
+		return search(needle, StructuredText.SEARCH_IGNORE_CASE);
+	}
 
 	public native byte[] textAsHtml();
 
@@ -81,4 +100,16 @@ public class Page
 	public native void deleteLink(Link link);
 
 	public native String getLabel();
+
+	public boolean isPDF() {
+		return false;
+	}
+
+	public native BarcodeInfo decodeBarcode(Rect subarea, float rotate);
+	public BarcodeInfo decodeBarcode(Rect subarea) {
+		return decodeBarcode(subarea, 0);
+	}
+	public BarcodeInfo decodeBarcode() {
+		return decodeBarcode(Rect.Infinite(), 0);
+	}
 }

@@ -43,8 +43,13 @@ static int usage(void)
 		"Content stream special commands:\n"
 		"\t%%%%MediaBox LLX LLY URX URY\n"
 		"\t%%%%Rotate Angle\n"
-		"\t%%%%Font Name Filename (or base 14 font name)\n"
-		"\t%%%%CJKFont Name Language WMode Style (Language=zh-Hant|zh-Hans|ja|ko, WMode=H|V, Style=serif|sans)\n"
+		"\t%%%%Font Name Filename Encoding\n"
+		"\t\tFilename is either a file or a base 14 font name\n"
+		"\t\tEncoding=Latin|Greek|Cyrillic\n"
+		"\t%%%%CJKFont Name Language WMode Style\n"
+		"\t\tLanguage=zh-Hant|zh-Hans|ja|ko\n"
+		"\t\tWMode=H|V\n"
+		"\t\tStyle=serif|sans)\n"
 		"\t%%%%Image Name Filename\n\n"
 		);
 	fputs(fz_pdf_write_options_usage, stderr);
@@ -205,7 +210,7 @@ static void create_page(char *input)
 					char *path = fz_strsep(&p, " ");
 					char *enc = fz_strsep(&p, " ");
 					if (!name || !path)
-						fz_throw(ctx, FZ_ERROR_GENERIC, "Font directive missing arguments");
+						fz_throw(ctx, FZ_ERROR_ARGUMENT, "Font directive missing arguments");
 					add_font_res(resources, name, path, enc);
 				}
 				else if (!strcmp(s, "%%CJKFont"))
@@ -215,7 +220,7 @@ static void create_page(char *input)
 					char *wmode = fz_strsep(&p, " ");
 					char *style = fz_strsep(&p, " ");
 					if (!name || !lang)
-						fz_throw(ctx, FZ_ERROR_GENERIC, "CJKFont directive missing arguments");
+						fz_throw(ctx, FZ_ERROR_ARGUMENT, "CJKFont directive missing arguments");
 					add_cjkfont_res(resources, name, lang, wmode, style);
 				}
 				else if (!strcmp(s, "%%Image"))
@@ -223,7 +228,7 @@ static void create_page(char *input)
 					char *name = fz_strsep(&p, " ");
 					char *path = fz_strsep(&p, " ");
 					if (!name || !path)
-						fz_throw(ctx, FZ_ERROR_GENERIC, "Image directive missing arguments");
+						fz_throw(ctx, FZ_ERROR_ARGUMENT, "Image directive missing arguments");
 					add_image_res(resources, name, path);
 				}
 			}
@@ -260,7 +265,7 @@ int pdfcreate_main(int argc, char **argv)
 	{
 		switch (c)
 		{
-		case 'o': output = fz_optarg; break;
+		case 'o': output = fz_optpath(fz_optarg); break;
 		case 'O': flags = fz_optarg; break;
 		default: return usage();
 		}
@@ -293,7 +298,7 @@ int pdfcreate_main(int argc, char **argv)
 		pdf_drop_document(ctx, doc);
 	fz_catch(ctx)
 	{
-		fz_log_error(ctx, fz_caught_message(ctx));
+		fz_report_error(ctx);
 		error = 1;
 	}
 

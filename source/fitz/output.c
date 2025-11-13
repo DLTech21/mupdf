@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2022 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -34,6 +34,7 @@
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
+#include <fcntl.h>
 #else
 #include <unistd.h>
 #endif
@@ -51,26 +52,35 @@ file_write(fz_context *ctx, void *opaque, const void *buffer, size_t count)
 	{
 		int x = putc(((unsigned char*)buffer)[0], file);
 		if (x == EOF && ferror(file))
-			fz_throw(ctx, FZ_ERROR_GENERIC, "cannot fwrite: %s", strerror(errno));
+			fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot fwrite: %s", strerror(errno));
 		return;
 	}
 
 	n = fwrite(buffer, 1, count, file);
 	if (n < count && ferror(file))
-		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot fwrite: %s", strerror(errno));
+		fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot fwrite: %s", strerror(errno));
 }
+
+static int64_t stdout_offset = 0;
 
 static void
 stdout_write(fz_context *ctx, void *opaque, const void *buffer, size_t count)
 {
+	stdout_offset += count;
 	file_write(ctx, stdout, buffer, count);
+}
+
+static int64_t
+stdout_tell(fz_context *ctx, void *opaque)
+{
+	return stdout_offset;
 }
 
 static fz_output fz_stdout_global = {
 	NULL,
 	stdout_write,
 	NULL,
-	NULL,
+	stdout_tell,
 	NULL,
 };
 
@@ -102,7 +112,7 @@ fz_output *fz_stderr(fz_context *ctx)
 static void
 stdods_write(fz_context *ctx, void *opaque, const void *buffer, size_t count)
 {
-	unsigned char *buf = fz_malloc(ctx, count+1);
+	char *buf = fz_malloc(ctx, count+1);
 
 	memcpy(buf, buffer, count);
 	buf[count] = 0;
@@ -150,7 +160,7 @@ file_seek(fz_context *ctx, void *opaque, int64_t off, int whence)
 	int n = fseeko(file, off, whence);
 #endif
 	if (n < 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot fseek: %s", strerror(errno));
+		fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot fseek: %s", strerror(errno));
 }
 
 static int64_t
@@ -163,7 +173,7 @@ file_tell(fz_context *ctx, void *opaque)
 	int64_t off = ftello(file);
 #endif
 	if (off == -1)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot ftell: %s", strerror(errno));
+		fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot ftell: %s", strerror(errno));
 	return off;
 }
 
@@ -243,55 +253,78 @@ fz_output *
 fz_new_output_with_path(fz_context *ctx, const char *filename, int append)
 {
 	FILE *file;
-	fz_output *out;
 
 	if (filename == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "no output to write to");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "no output to write to");
 
-	if (!strcmp(filename, "/dev/null") || !fz_strcasecmp(filename, "nul:"))
+	if (!strcmp(filename, "/dev/null"))
 		return fz_new_output(ctx, 0, NULL, null_write, NULL, NULL);
+	if (!strcmp(filename, "/dev/stdout"))
+	{
+#ifdef _WIN32
+		(void)setmode(fileno(stdout), O_BINARY);
+#endif
+		return fz_stdout(ctx);
+	}
+	if (!strcmp(filename, "/dev/stderr"))
+	{
+#ifdef _WIN32
+		(void)setmode(fileno(stderr), O_BINARY);
+#endif
+		return fz_stderr(ctx);
+	}
 
 	/* If <append> is false, we use fopen()'s 'x' flag to force an error if
 	 * some other process creates the file immediately after we have removed
-	 * it - this avoids vunerability where a less-privilege process can create
+	 * it - this avoids vulnerability where a less-privilege process can create
 	 * a link and get us to overwrite a different file. See:
 	 * 	https://bugs.ghostscript.com/show_bug.cgi?id=701797
 	 * 	http://www.open-std.org/jtc1/sc22//WG14/www/docs/n1339.pdf
 	 */
+#if defined(_WIN32) && !defined(__MINGW32__) && !defined(__MINGW64__)
+#define CLOBBER "x"
+#else
+#define CLOBBER ""
+#endif
+/* On windows, we use variants of fopen and remove that cope with utf8. */
 #ifdef _WIN32
+#define FOPEN fz_fopen_utf8
+#define REMOVE fz_remove_utf8
+#else
+#define FOPEN fopen
+#define REMOVE remove
+#endif
 	/* Ensure we create a brand new file. We don't want to clobber our old file. */
 	if (!append)
 	{
-		if (fz_remove_utf8(filename) < 0)
+		if (REMOVE(filename) < 0)
 			if (errno != ENOENT)
-				fz_throw(ctx, FZ_ERROR_GENERIC, "cannot remove file '%s': %s", filename, strerror(errno));
+				fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot remove file '%s': %s", filename, strerror(errno));
 	}
-#if defined(__MINGW32__) || defined(__MINGW64__)
-	file = fz_fopen_utf8(filename, append ? "rb+" : "wb+"); /* 'x' flag not suported. */
-#else
-	file = fz_fopen_utf8(filename, append ? "rb+" : "wb+x");
-#endif
+	file = FOPEN(filename, append ? "rb+" : "wb+" CLOBBER);
 	if (append)
 	{
 		if (file == NULL)
-			file = fz_fopen_utf8(filename, "wb+");
+			file = FOPEN(filename, "wb+");
 		else
 			fseek(file, 0, SEEK_END);
 	}
-#else
-	/* Ensure we create a brand new file. We don't want to clobber our old file. */
-	if (!append)
-	{
-		if (remove(filename) < 0)
-			if (errno != ENOENT)
-				fz_throw(ctx, FZ_ERROR_GENERIC, "cannot remove file '%s': %s", filename, strerror(errno));
-	}
-	file = fopen(filename, append ? "rb+" : "wb+x");
-	if (file == NULL && append)
-		file = fopen(filename, "wb+");
-#endif
+#undef FOPEN
+#undef REMOVE
+#undef CLOBBER
 	if (!file)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot open file '%s': %s", filename, strerror(errno));
+		fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot open file '%s': %s", filename, strerror(errno));
+
+	return fz_new_output_with_file_ptr(ctx, file);
+}
+
+fz_output *
+fz_new_output_with_file_ptr(fz_context *ctx, FILE *file)
+{
+	fz_output *out;
+
+	if (!file)
+		return fz_new_output(ctx, 0, NULL, null_write, NULL, NULL);
 
 	setvbuf(file, NULL, _IONBF, 0); /* we do our own buffering */
 	out = fz_new_output(ctx, 8192, file, file_write, NULL, file_drop);
@@ -313,7 +346,7 @@ buffer_write(fz_context *ctx, void *opaque, const void *data, size_t len)
 static void
 buffer_seek(fz_context *ctx, void *opaque, int64_t off, int whence)
 {
-	fz_throw(ctx, FZ_ERROR_GENERIC, "cannot seek in buffer: %s", strerror(errno));
+	fz_throw(ctx, FZ_ERROR_ARGUMENT, "cannot seek in buffer: %s", strerror(errno));
 }
 
 static int64_t
@@ -330,12 +363,20 @@ buffer_drop(fz_context *ctx, void *opaque)
 	fz_drop_buffer(ctx, buffer);
 }
 
+static void
+buffer_reset(fz_context *ctx, void *opaque)
+{
+	fz_buffer *buffer = opaque;
+	fz_clear_buffer(ctx, buffer);
+}
+
 fz_output *
 fz_new_output_with_buffer(fz_context *ctx, fz_buffer *buf)
 {
 	fz_output *out = fz_new_output(ctx, 0, fz_keep_buffer(ctx, buf), buffer_write, NULL, buffer_drop);
 	out->seek = buffer_seek;
 	out->tell = buffer_tell;
+	out->reset = buffer_reset;
 	return out;
 }
 
@@ -345,9 +386,9 @@ fz_close_output(fz_context *ctx, fz_output *out)
 	if (out == NULL)
 		return;
 	fz_flush_output(ctx, out);
-	if (out->close)
+	if (!out->closed && out->close)
 		out->close(ctx, out->state);
-	out->close = NULL;
+	out->closed = 1;
 }
 
 void
@@ -355,7 +396,7 @@ fz_drop_output(fz_context *ctx, fz_output *out)
 {
 	if (out)
 	{
-		if (out->close)
+		if (!out->closed)
 			fz_warn(ctx, "dropping unclosed output");
 		if (out->drop)
 			out->drop(ctx, out->state);
@@ -366,10 +407,22 @@ fz_drop_output(fz_context *ctx, fz_output *out)
 }
 
 void
+fz_reset_output(fz_context *ctx, fz_output *out)
+{
+	if (!out)
+		return;
+	if (out->reset == NULL)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Cannot reset this output");
+
+	out->reset(ctx, out->state);
+	out->closed = 0;
+}
+
+void
 fz_seek_output(fz_context *ctx, fz_output *out, int64_t off, int whence)
 {
 	if (out->seek == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot seek in unseekable output stream\n");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Cannot seek in unseekable output stream\n");
 	fz_flush_output(ctx, out);
 	out->seek(ctx, out->state, off, whence);
 }
@@ -378,7 +431,7 @@ int64_t
 fz_tell_output(fz_context *ctx, fz_output *out)
 {
 	if (out->tell == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot tell in untellable output stream\n");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Cannot tell in untellable output stream\n");
 	if (out->bp)
 		return out->tell(ctx, out->state) + (out->wp - out->bp);
 	return out->tell(ctx, out->state);
@@ -388,7 +441,7 @@ fz_stream *
 fz_stream_from_output(fz_context *ctx, fz_output *out)
 {
 	if (out->as_stream == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot derive input stream from output stream");
+		return NULL;
 	fz_flush_output(ctx, out);
 	return out->as_stream(ctx, out->state);
 }
@@ -397,7 +450,7 @@ void
 fz_truncate_output(fz_context *ctx, fz_output *out)
 {
 	if (out->truncate == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot truncate this output stream");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Cannot truncate this output stream");
 	fz_flush_output(ctx, out);
 	out->truncate(ctx, out->state);
 }
@@ -604,7 +657,7 @@ fz_write_rune(fz_context *ctx, fz_output *out, int rune)
 void
 fz_write_base64(fz_context *ctx, fz_output *out, const unsigned char *data, size_t size, int newline)
 {
-	static const char set[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	static const char set[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	size_t i;
 	for (i = 0; i + 3 <= size; i += 3)
 	{
@@ -648,7 +701,7 @@ fz_write_base64_buffer(fz_context *ctx, fz_output *out, fz_buffer *buf, int newl
 void
 fz_append_base64(fz_context *ctx, fz_buffer *out, const unsigned char *data, size_t size, int newline)
 {
-	static const char set[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	static const char set[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	size_t i;
 	for (i = 0; i + 3 <= size; i += 3)
 	{
@@ -718,7 +771,7 @@ void fz_write_header(fz_context *ctx, fz_band_writer *writer, int w, int h, int 
 		return;
 
 	if (w <= 0 || h <= 0 || n <= 0 || alpha < 0 || alpha > 1)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid bandwriter header dimensions/setup");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Invalid bandwriter header dimensions/setup");
 
 	writer->w = w;
 	writer->h = h;
@@ -740,7 +793,7 @@ void fz_write_band(fz_context *ctx, fz_band_writer *writer, int stride, int band
 	if (writer->line + band_height > writer->h)
 		band_height = writer->h - writer->line;
 	if (band_height < 0) {
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Too much band data!");
+		fz_throw(ctx, FZ_ERROR_LIMIT, "Too much band data!");
 	}
 	if (band_height > 0) {
 		writer->band(ctx, writer, stride, writer->line, band_height, samples);
@@ -817,4 +870,16 @@ void fz_write_bits_sync(fz_context *ctx, fz_output *out)
 	if (out->buffered == 0)
 		return;
 	fz_write_bits(ctx, out, 0, 8 - out->buffered);
+}
+
+void
+fz_write_stream(fz_context *ctx, fz_output *out, fz_stream *in)
+{
+	size_t z;
+
+	while ((z = fz_available(ctx, in, 4096)) != 0)
+	{
+		fz_write_data(ctx, out, in->rp, z);
+		in->rp += z;
+	}
 }

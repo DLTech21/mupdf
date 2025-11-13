@@ -543,7 +543,7 @@ class TimingsItem:
 
 class Timings:
     '''
-    Allows gathering of hierachical timing information. Can also generate
+    Allows gathering of hierarchical timing information. Can also generate
     useful diagnostics.
 
     Caller can generate a tree of `TimingsItem` items via our `begin()` and
@@ -693,7 +693,7 @@ class Timings:
 
     def text( self, item, depth=0, precision=1):
         '''
-        Returns text showing hierachical timing information.
+        Returns text showing hierarchical timing information.
         '''
         if not self.active:
             return ''
@@ -1257,7 +1257,7 @@ def time_read_date1( text):
     <text> is:
         <year>-<month>-<day>-<hour>-<min>-<sec>
 
-    Trailing values can be ommitted, e.g. `2004-3' is treated as
+    Trailing values can be omitted, e.g. `2004-3' is treated as
     2004-03-0-0-0-0, i.e. 1st of March 2004. I think GMT is used,
     not the local time though.
 
@@ -1420,6 +1420,7 @@ def system(
         caller=1,
         bufsize=-1,
         env_extra=None,
+        multiline=True,
         ):
     '''
     Runs a command like `os.system()` or `subprocess.*`, but with more
@@ -1473,7 +1474,7 @@ def system(
         shell:
             Passed to underlying `subprocess.Popen()` call.
         encoding:
-            Sepecify the encoding used to translate the command's output to
+            Specify the encoding used to translate the command's output to
             characters. If `None` we send bytes to items in `out`.
         errors:
             How to handle encoding errors; see docs for `codecs` module
@@ -1494,6 +1495,10 @@ def system(
         env_extra:
             If not `None`, a `dict` with extra items that are added to the
             environment passed to the child process.
+        multiline:
+            If true (the default) we convert a multiline command into a single
+            command, but preserve the multiline representation in verbose
+            diagnostics.
 
     Returns:
 
@@ -1539,6 +1544,25 @@ def system(
     out_log = 0
 
     outs = out if isinstance(out, list) else [out]
+    decoders = dict()
+    def decoders_ensure(encoding):
+        d = decoders.get(encoding)
+        if d is None:
+            class D:
+                pass
+            d = D()
+            # subprocess's universal_newlines and codec.streamreader seem to
+            # always use buffering even with bufsize=0, so they don't reliably
+            # display prompts or other text that doesn't end with a newline.
+            #
+            # So we create our own incremental decode, which seems to work
+            # better.
+            #
+            d.decoder = codecs.getincrementaldecoder(encoding)(errors)
+            d.out = ''
+            decoders[ encoding] = d
+        return d
+
     for i, o in enumerate(outs):
         if o is None:
             out_none += 1
@@ -1551,28 +1575,46 @@ def system(
                 o, o_prefix = o
                 assert o not in (None, subprocess.DEVNULL), f'out[]={o} does not make sense with a prefix ({o_prefix})'
             assert not isinstance(o, (tuple, list))
+            o_decoder = None
             if o == 'return':
                 assert not out_return, f'"return" specified twice does not make sense'
                 out_return = io.StringIO()
-                outs[i] = out_return.write
+                o_fn = out_return.write
             elif o == 'log':
                 assert not out_log, f'"log" specified twice does not make sense'
                 out_log += 1
                 out_frame_record = inspect.stack()[caller]
-                outs[i] = lambda text: log( text, caller=out_frame_record, nv=False, raw=True)
+                o_fn = lambda text: log( text, caller=out_frame_record, nv=False, raw=True)
             elif isinstance(o, int):
-                outs[i] = lambda text: os.write( o, text)
+                def fn(text, o=o):
+                    os.write(o, text.encode())
+                o_fn = fn
             elif callable(o):
-                outs[i] = o
+                o_fn = o
             else:
                 assert hasattr(o, 'write') and callable(o.write), (
                         f'Do not understand o={o}, must be one of:'
                             ' None, subprocess.DEVNULL, "return", "log", <int>,'
                             ' or support o() or o.write().'
                             )
-                outs[i] = o.write
+                o_decoder = decoders_ensure(o.encoding)
+                def o_fn(text, o=o):
+                    if errors == 'strict':
+                        o.write(text)
+                    else:
+                        # This is probably only necessary on Windows, where
+                        # sys.stdout can be cp1252 and will sometimes raise
+                        # UnicodeEncodeError. We hard-ignore these errors.
+                        try:
+                            o.write(text)
+                        except Exception as e:
+                            o.write(f'\n[Ignoring Exception: {e}]\n')
+                    o.flush()   # Seems to be necessary on Windows.
             if o_prefix:
-                outs[i] = StreamPrefix( outs[i], o_prefix).write
+                o_fn = StreamPrefix( o_fn, o_prefix).write
+            if not o_decoder:
+                o_decoder = decoders_ensure(encoding)
+            outs[i] = o_fn, o_decoder
 
     if out_pipe:
         stdout = subprocess.PIPE
@@ -1585,6 +1627,19 @@ def system(
         stderr = subprocess.DEVNULL
     else:
         assert 0, f'Inconsistent out: {out}'
+
+    if multiline and '\n' in command:
+        command = textwrap.dedent(command)
+        lines = list()
+        for line in command.split( '\n'):
+            h = 0 if line.startswith( '#') else line.find(' #')
+            if h >= 0:
+                line = line[:h]
+            if line.strip():
+                line = line.rstrip()
+                lines.append(line)
+        sep = ' ' if platform.system() == 'Windows' else ' \\\n'
+        command = sep.join(lines)
 
     if verbose:
         log(f'running: {command_env_text( command, env_extra)}', nv=0, caller=caller+1)
@@ -1607,16 +1662,6 @@ def system(
             )
 
     if out_pipe:
-        decoder = None
-        if encoding:
-            # subprocess's universal_newlines and codec.streamreader seem to
-            # always use buffering even with bufsize=0, so they don't reliably
-            # display prompts or other text that doesn't end with a newline.
-            #
-            # So we create our own incremental decode, which seems to work
-            # better.
-            #
-            decoder = codecs.getincrementaldecoder(encoding)(errors)
         while 1:
             # os.read() seems to be better for us than child.stdout.read()
             # because it returns a short read if data is not available. Where
@@ -1624,16 +1669,16 @@ def system(
             # data until the requested number of bytes have been received.
             #
             # Also, os.read() does the right thing if the sender has made
-            # multipe calls to write() - it returns all available data, not
+            # multiple calls to write() - it returns all available data, not
             # just from the first unread write() call.
             #
-            output = os.read( child.stdout.fileno(), 10000)
-            if decoder:
-                final = not output
-                output = decoder.decode(output, final)
-            for o in outs:
-                o(output)
-            if not output:
+            output0 = os.read( child.stdout.fileno(), 10000)
+            final = not output0
+            for _, decoder in decoders.items():
+                decoder.out = decoder.decoder.decode(output0, final)
+            for o_fn, o_decoder in outs:
+                o_fn( o_decoder.out)
+            if not output0:
                 break
 
     e = child.wait()
@@ -1824,6 +1869,8 @@ def fs_update( text, filename, return_different=False):
 
     If `return_different` is true, we return existing contents if `filename`
     already exists and differs from `text`.
+
+    Otherwise we return true if file has changed.
     '''
     try:
         with open( filename) as f:
@@ -1833,12 +1880,12 @@ def fs_update( text, filename, return_different=False):
     if text != text0:
         if return_different and text0 is not None:
             return text
-        log( 'Updating:  ' + filename)
         # Write to temp file and rename, to ensure we are atomic.
         filename_temp = f'{filename}-jlib-temp'
         with open( filename_temp, 'w') as f:
             f.write( text)
         fs_rename( filename_temp, filename)
+        return True
 
 
 def fs_find_in_paths( name, paths=None, verbose=False):
@@ -1953,7 +2000,7 @@ def fs_ensure_empty_dir( path):
 def fs_rename(src, dest):
     '''
     Renames `src` to `dest`. If we get an error, we try to remove `dest`
-    expicitly and then retry; this is to make things work on Windows.
+    explicitly and then retry; this is to make things work on Windows.
     '''
     try:
         os.rename(src, dest)
@@ -2069,7 +2116,7 @@ def fs_newer( pattern, t):
     paths = glob.glob(pattern)
     paths_new = []
     for path in paths:
-        tt = os.path.getmtime(path)
+        tt = fs_mtime(path)
         if tt >= t:
             paths_new.append(path)
     return paths_new
@@ -2089,7 +2136,7 @@ def build(
     determinism of dependencies.
 
     Rebuilds `outfiles` by running `command` if we determine that any of them
-    are out of date, or if `comand` has changed.
+    are out of date, or if `command` has changed.
 
     infiles:
         Names of files that are read by `command`. Can be a single filename. If
@@ -2099,8 +2146,12 @@ def build(
         Names of files that are written by `command`. Can also be a single
         filename. Can be `(files2, filter_)` as supported by `jlib.fs_paths()`.
     command:
-        Command to run. {IN} and {OUT} are replaced by space-separated
-        `infiles` and `outfiles` with '/' changed to '\' on Windows.
+        Usually a string, the command to run. {IN} and {OUT} are replaced by
+        space-separated `infiles` and `outfiles` with '/' changed to '\' on
+        Windows.
+
+        Otherwise can be a callable taking no parameters. This is not as good
+        as a string because we cannot detect if the command has changed.
     force_rebuild:
         If true, we always re-run the command.
     out:
@@ -2133,7 +2184,6 @@ def build(
     if out is None:
         out = 'log'
 
-    command_filename = f'{outfiles[0]}.cmd'
     reasons = []
 
     if not reasons or all_reasons:
@@ -2151,17 +2201,20 @@ def build(
             # window.
             ret = ret.replace('/', '\\\\')
         return ret
-    command = command.replace('{IN}', files_string(infiles))
-    command = command.replace('{OUT}', files_string(outfiles))
 
-    if not reasons or all_reasons:
-        try:
-            with open( command_filename) as f:
-                command0 = f.read()
-        except Exception:
-            command0 = None
-        if command != command0:
-           reasons.append( 'command has changed')
+    if not callable(command):
+        command = command.replace('{IN}', files_string(infiles))
+        command = command.replace('{OUT}', files_string(outfiles))
+        command_filename = f'{outfiles[0]}.cmd'
+
+        if not reasons or all_reasons:
+            try:
+                with open( command_filename) as f:
+                    command0 = f.read()
+            except Exception:
+                command0 = None
+            if command != command0:
+               reasons.append( f'command has changed:\n{command0}\n=>\n{command}')
 
     if not reasons or all_reasons:
         reason = fs_any_newer( infiles, outfiles)
@@ -2177,24 +2230,32 @@ def build(
             nv=0,
             )
 
-    # Empty <command_filename) while we run the command so that if command
-    # fails but still creates target(s), then next time we will know target(s)
-    # are not up to date.
-    #
-    # We rename the command to a temporary file and then rename back again
-    # after the command finishes so that its mtime is unchanged if the command
-    # has not changed.
-    #
-    fs_ensure_parent_dir( command_filename)
-    command_filename_temp = command_filename + '-'
-    fs_remove(command_filename_temp)
-    if os.path.exists( command_filename):
-        fs_rename(command_filename, command_filename_temp)
-    fs_update( command, command_filename_temp)
+    if callable(command):
+        command()
 
-    system( command, out=out, verbose=verbose, executable=executable, caller=2)
+    else:
+        # Empty <command_filename) while we run the command so that if command
+        # fails but still creates target(s), then next time we will know
+        # target(s) are not up to date.
+        #
+        # We rename the command to a temporary file and then rename back again
+        # after the command finishes so that its mtime is unchanged if the
+        # command has not changed.
+        #
+        fs_ensure_parent_dir( command_filename)
+        command_filename_temp = command_filename + '-'
+        fs_remove(command_filename_temp)
+        if os.path.exists( command_filename):
+            fs_rename(command_filename, command_filename_temp)
+        fs_update( command, command_filename_temp)
+        assert os.path.isfile( command_filename_temp)
 
-    fs_rename( command_filename_temp, command_filename)
+        system( command, out=out, verbose=verbose, executable=executable, caller=2)
+
+        assert os.path.isfile( command_filename_temp), \
+                f'Command seems to have deleted {command_filename_temp=}: {command!r}'
+
+        fs_rename( command_filename_temp, command_filename)
 
     return True
 
@@ -2222,9 +2283,11 @@ def link_l_flags( sos, ld_origin=None):
         dir_ = os.path.dirname( so)
         name = os.path.basename( so)
         assert name.startswith( 'lib'), f'name={name}'
-        if name.endswith( '.so'):
+        m = re.search( '(.so[.0-9]*)$', name)
+        if m:
+            l = len(m.group(1))
             dirs.add( dir_)
-            names.append( f'-l {name[3:-3]}')
+            names.append( f'-l {name[3:-l]}')
         elif darwin and name.endswith( '.dylib'):
             dirs.add( dir_)
             names.append( f'-l {name[3:-6]}')
@@ -2248,6 +2311,9 @@ def link_l_flags( sos, ld_origin=None):
             # `install_name_tool -change` to rename internal names to
             # `@rpath/<leafname>`.
             ret += ' -Wl,-rpath,@loader_path/.'
+        elif os.environ.get( 'PYODIDE') == '1':
+            # 2025-09-05: Pyodide now supports rpath.
+            ret += " -Wl,-rpath,'$ORIGIN'"
         else:
             ret += " -Wl,-rpath,'$ORIGIN',-z,origin"
     #log('{sos=} {ld_origin=} {ret=}')

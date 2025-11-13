@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -299,7 +299,7 @@ int pdfmerge_main(int argc, char **argv)
 	{
 		switch (c)
 		{
-		case 'o': output = fz_optarg; break;
+		case 'o': output = fz_optpath(fz_optarg); break;
 		case 'O': flags = fz_optarg; break;
 		default: return usage();
 		}
@@ -323,7 +323,7 @@ int pdfmerge_main(int argc, char **argv)
 	}
 	fz_catch(ctx)
 	{
-		fz_log_error(ctx, fz_caught_message(ctx));
+		fz_report_error(ctx);
 		fz_log_error(ctx, "Cannot create destination document.");
 		fz_flush_warnings(ctx);
 		fz_drop_context(ctx);
@@ -335,6 +335,8 @@ int pdfmerge_main(int argc, char **argv)
 	{
 		doc_src = NULL;
 		input = argv[fz_optind++];
+
+		fz_var(doc_src);
 
 		fz_try(ctx)
 		{
@@ -348,7 +350,7 @@ int pdfmerge_main(int argc, char **argv)
 			pdf_drop_document(ctx, doc_src);
 		fz_catch(ctx)
 		{
-			fz_log_error(ctx, fz_caught_message(ctx));
+			fz_report_error(ctx);
 			fz_log_error_printf(ctx, "Cannot merge document '%s'.", input);
 		}
 	}
@@ -359,7 +361,7 @@ int pdfmerge_main(int argc, char **argv)
 			pdf_save_document(ctx, doc_des, output, &opts);
 		fz_catch(ctx)
 		{
-			fz_log_error(ctx, fz_caught_message(ctx));
+			fz_report_error(ctx);
 			fz_log_error_printf(ctx, "Cannot save output file: '%s'.", output);
 		}
 	}

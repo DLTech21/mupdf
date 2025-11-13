@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -186,7 +186,7 @@ int pdftrim_main(int argc, char **argv)
 	int code = EXIT_SUCCESS;
 	int exclude = 0;
 	const char *boxname = NULL;
-	fz_box_type box = FZ_MEDIA_BOX;
+	fz_box_type box = FZ_CROP_BOX;
 	int fallback = 0;
 	float margins[4] = { 0 };
 	int c;
@@ -198,7 +198,7 @@ int pdftrim_main(int argc, char **argv)
 		default: return usage();
 
 		case 'b': boxname = fz_optarg; break;
-		case 'o': outputfile = fz_optarg; break;
+		case 'o': outputfile = fz_optpath(fz_optarg); break;
 		case 'e': exclude = 1; break;
 		case 'f': fallback = 1; break;
 		case 'm': read_margins(margins, fz_optarg); break;
@@ -248,6 +248,8 @@ int pdftrim_main(int argc, char **argv)
 	 * the simplest way. */
 	fz_register_document_handlers(ctx);
 
+	fz_var(doc);
+
 	fz_try(ctx)
 	{
 		/* Load the input document. */
@@ -268,7 +270,7 @@ int pdftrim_main(int argc, char **argv)
 	}
 	fz_catch(ctx)
 	{
-		fz_log_error(ctx, fz_caught_message(ctx));
+		fz_report_error(ctx);
 		code = EXIT_FAILURE;
 	}
 	fz_drop_context(ctx);

@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -38,6 +38,7 @@ public class Pixmap
 
 	private native long newNative(ColorSpace cs, int x, int y, int w, int h, boolean alpha);
 	private native long newNativeFromColorAndMask(Pixmap color, Pixmap mask);
+	private native long newNativeDeskew(float angle, int border);
 
 	private Pixmap(long p) {
 		pointer = p;
@@ -77,12 +78,21 @@ public class Pixmap
 		clearWithValue(value);
 	}
 
+	public native Buffer asPNG();
+	public native Buffer asJPEG(int quality, boolean invertCMYK);
+	public native Buffer asPAM();
+	public native Buffer asPNM();
+	public native Buffer asPBM();
+	public native Buffer asPKM();
+	public native Buffer asJPX(int quality);
+
 	public native void saveAsPNG(String filename);
 	public native void saveAsJPEG(String filename, int quality);
 	public native void saveAsPAM(String filename);
 	public native void saveAsPNM(String filename);
 	public native void saveAsPBM(String filename);
 	public native void saveAsPKM(String filename);
+	public native void saveAsJPX(String filename, int quality);
 
 	public native int getX();
 	public native int getY();
@@ -105,6 +115,7 @@ public class Pixmap
 	public native void gamma(float gamma);
 	public native void tint(int black, int white);
 	public native Pixmap convertToColorSpace(ColorSpace cs, ColorSpace proof, DefaultColorSpaces defaultCs, int colorParams, boolean keepAlpha);
+	public native byte[] computeMD5();
 
 	public Rect getBounds() {
 		int x = getX();
@@ -121,5 +132,39 @@ public class Pixmap
 			" alpha=" + getAlpha() +
 			" cs=" + getColorSpace() +
 			")";
+	}
+
+	public static final int DESKEW_BORDER_INCREASE = 0;
+	public static final int DESKEW_BORDER_MAINTAIN = 1;
+	public static final int DESKEW_BORDER_DECREASE = 2;
+
+	public Pixmap deskew(float angle, int border)
+	{
+		return new Pixmap(newNativeDeskew(angle, border));
+	}
+
+	public native float detectSkew();
+	public native Pixmap warp(Quad points, int width, int height);
+	public native Pixmap autowarp(Quad points);
+
+	private native Quad detectDocument();
+
+	public native BarcodeInfo decodeBarcode(float rotate);
+	public BarcodeInfo decodeBarcode() {
+		return decodeBarcode(0);
+	}
+
+	public static native Pixmap encodeBarcode(int type, String contents, int size, int errorCorrectionLevel, boolean quietZones, boolean humanReadableText);
+	public static Pixmap encodeBarcode(int type, String contents, int size, int errorCorrectionLevel, boolean quietZones) {
+		return encodeBarcode(type, contents, size, errorCorrectionLevel, quietZones, false);
+	}
+	public static Pixmap encodeBarcode(int type, String contents, int size, int errorCorrectionLevel) {
+		return encodeBarcode(type, contents, size, errorCorrectionLevel, false, false);
+	}
+	public static Pixmap encodeBarcode(int type, String contents, int size) {
+		return encodeBarcode(type, contents, size, 2, false, false);
+	}
+	public static Pixmap encodeBarcode(int type, String contents) {
+		return encodeBarcode(type, contents, 0, 2, false, false);
 	}
 }

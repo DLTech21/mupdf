@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -156,8 +156,55 @@ fz_document_writer *fz_new_pkm_pixmap_writer(fz_context *ctx, const char *path, 
 	return fz_new_pixmap_writer(ctx, path, options, "out-%04d.pkm", 4, fz_save_pixmap_as_pkm);
 }
 
+static void fz_write_pixmap_as_jpeg_default(fz_context *ctx, fz_output *out, fz_pixmap *pixmap)
+{
+	fz_write_pixmap_as_jpeg(ctx, out, pixmap, 90, 1);
+}
+
+fz_document_writer *fz_new_jpeg_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 0, fz_write_pixmap_as_jpeg_default);
+}
+
+fz_document_writer *fz_new_png_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 0, fz_write_pixmap_as_png);
+}
+
+fz_document_writer *fz_new_pam_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 0, fz_write_pixmap_as_pam);
+}
+
+fz_document_writer *fz_new_pnm_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 0, fz_write_pixmap_as_pnm);
+}
+
+fz_document_writer *fz_new_pgm_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 1, fz_write_pixmap_as_pnm);
+}
+
+fz_document_writer *fz_new_ppm_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 3, fz_write_pixmap_as_pnm);
+}
+
+fz_document_writer *fz_new_pbm_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 1, fz_write_pixmap_as_pbm);
+}
+
+fz_document_writer *fz_new_pkm_pixmap_writer_with_output(fz_context *ctx, fz_output *out, const char *options)
+{
+	return fz_new_pixmap_writer_with_output(ctx, out, options, 4, fz_write_pixmap_as_pkm);
+}
+
 static int is_extension(const char *a, const char *ext)
 {
+	if (!a)
+		return 0;
 	if (a[0] == '.')
 		++a;
 	return !fz_strcasecmp(a, ext);
@@ -190,6 +237,8 @@ fz_new_document_writer(fz_context *ctx, const char *path, const char *explicit_f
 
 		if (is_extension(format, "cbz"))
 			return fz_new_cbz_writer(ctx, path, options);
+		if (is_extension(format, "csv"))
+			return fz_new_csv_writer(ctx, path, options);
 
 		if (is_extension(format, "svg"))
 			return fz_new_svg_writer(ctx, path, options);
@@ -244,20 +293,45 @@ fz_new_document_writer(fz_context *ctx, const char *path, const char *explicit_f
 		else
 			format = NULL;
 	}
-	fz_throw(ctx, FZ_ERROR_GENERIC, "cannot detect document format");
+	fz_throw(ctx, FZ_ERROR_ARGUMENT, "cannot detect document format");
 }
 
 fz_document_writer *
 fz_new_document_writer_with_output(fz_context *ctx, fz_output *out, const char *format, const char *options)
 {
-	if (is_extension(format, "cbz"))
-		return fz_new_cbz_writer_with_output(ctx, out, options);
+#if FZ_ENABLE_OCR_OUTPUT
 	if (is_extension(format, "ocr"))
 		return fz_new_pdfocr_writer_with_output(ctx, out, options);
+#endif
 #if FZ_ENABLE_PDF
 	if (is_extension(format, "pdf"))
 		return fz_new_pdf_writer_with_output(ctx, out, options);
 #endif
+
+	if (is_extension(format, "cbz"))
+		return fz_new_cbz_writer_with_output(ctx, out, options);
+	if (is_extension(format, "csv"))
+		return fz_new_csv_writer_with_output(ctx, out, options);
+
+	if (is_extension(format, "svg"))
+		return fz_new_svg_writer_with_output(ctx, out, options);
+
+	if (is_extension(format, "png"))
+		return fz_new_png_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "pam"))
+		return fz_new_pam_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "pnm"))
+		return fz_new_pnm_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "pgm"))
+		return fz_new_pgm_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "ppm"))
+		return fz_new_ppm_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "pbm"))
+		return fz_new_pbm_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "pkm"))
+		return fz_new_pkm_pixmap_writer_with_output(ctx, out, options);
+	if (is_extension(format, "jpeg") || is_extension(format, "jpg"))
+		return fz_new_jpeg_pixmap_writer_with_output(ctx, out, options);
 
 	if (is_extension(format, "pcl"))
 		return fz_new_pcl_writer_with_output(ctx, out, options);
@@ -288,7 +362,7 @@ fz_new_document_writer_with_output(fz_context *ctx, fz_output *out, const char *
 		return fz_new_docx_writer_with_output(ctx, out, options);
 #endif
 
-	fz_throw(ctx, FZ_ERROR_GENERIC, "unknown output document format: %s", format);
+	fz_throw(ctx, FZ_ERROR_ARGUMENT, "unknown output document format: %s", format);
 }
 
 fz_document_writer *
@@ -296,12 +370,13 @@ fz_new_document_writer_with_buffer(fz_context *ctx, fz_buffer *buffer, const cha
 {
 	fz_document_writer *wri;
 	fz_output *out = fz_new_output_with_buffer(ctx, buffer);
-	fz_try(ctx)
+	fz_try(ctx) {
 		wri = fz_new_document_writer_with_output(ctx, out, format, options);
-	fz_always(ctx)
+	}
+	fz_catch(ctx) {
 		fz_drop_output(ctx, out);
-	fz_catch(ctx)
 		fz_rethrow(ctx);
+	}
 	return wri;
 }
 
@@ -334,7 +409,7 @@ fz_begin_page(fz_context *ctx, fz_document_writer *wri, fz_rect mediabox)
 	if (!wri)
 		return NULL;
 	if (wri->dev)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "called begin page without ending the previous page");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "called begin page without ending the previous page");
 	wri->dev = wri->begin_page(ctx, wri, mediabox);
 	return wri->dev;
 }

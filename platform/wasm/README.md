@@ -1,46 +1,43 @@
 # MuPDF.js
 
-This is a build of MuPDF targeting WASM environments.
+Welcome to the official MuPDF.js library from [Artifex](https://artifex.com).
 
-The MuPDF.js library can be used both in browsers and in Node.
+Use [MuPDF](https://mupdf.com) in your JavaScript and TypeScript projects!
 
-This library is very similar in design and use to the MuPDF Java library.
-The same classes and methods can be used in the same way -- but there are also a few
-conveniences available here thanks to the dynamic nature of Javascript that are
-not available in the Java API.
-
-## Getting started using NPM
-
-From the command line, go to the folder you want to work from and run:
-
-	npm install mupdf
-
-To verify your installation you can create a file "test.js" with the following script:
-
-	const mupdf = require("mupdf")
-	console.log(mupdf)
-
-Then, on the command line, run:
-
-	node test.js
-
-If all is well, this will print the `mupdf` module object to the console.
-
-## Loading a document
-
-The following example demonstrates how to load a document and then print out the page count.
-Ensure you have a "my_document.pdf" file alongside this example before trying it.
-
-	const fs = require("fs")
-	const mupdf = require("mupdf")
-	var data = fs.readFileSync("my_document.pdf")
-	var doc = mupdf.Document.openDocument(data, "application/pdf")
-	console.log(doc.countPages())
+This library is powered by WebAssembly and can be used in all the usual
+JavaScript environments: Node, Bun, Firefox, Safari, Chrome, etc.
 
 ## License
 
-AGPLv3 or later. See https://www.mupdf.com/licensing/ for more details.
+MuPDF.js is available under Open Source
+[AGPL](https://www.gnu.org/licenses/agpl-3.0.html) and commercial license
+agreements.
+
+> If you cannot meet the requirements of the AGPL, please contact
+> [Artifex](https://artifex.com/contact/mupdf-inquiry.php) regarding a
+> commercial license.
+
+## Installation
+
+	npm install mupdf
+
+## Usage
+
+The module is only available as an ESM module!
+
+	import mupdf from "mupdf"
+
+	var doc = mupdf.Document.openDocument("test.pdf")
+	console.log(doc.countPages())
+
+Check out the [example projects](examples/) to help you get started.
 
 ## Documentation
 
-For documentation please refer to https://mupdf.readthedocs.io/.
+- [MuPDF.js Reference](https://mupdf.readthedocs.io/en/latest/reference/javascript/)
+- [Getting Started & Examples](https://mupdfjs.readthedocs.io/en/latest/)
+
+## Contact
+
+Join the Discord at [#mupdf.js](https://discord.gg/zpyAHM7XtF) to chat with the
+developers directly.

@@ -35,6 +35,12 @@ endif
 
 include $(MUPDF_PATH)/Makelists
 
+ifeq ($(USE_TESSERACT),yes)
+ifeq ($(USE_LEPTONICA),)
+USE_LEPTONICA := yes
+endif
+endif
+
 # --- Build a local static library for core mupdf ---
 
 include $(CLEAR_VARS)
@@ -49,7 +55,7 @@ LOCAL_CFLAGS += -DTOFU_NOTO
 LOCAL_CFLAGS += -DTOFU_CJK
 LOCAL_CFLAGS += -DTOFU_SIL
 LOCAL_CFLAGS += -DAA_BITS=8
-LOCAL_CFLAGS += -DHAVE_LIBCRYPTO
+LOCAL_CFLAGS += -DFZ_ENABLE_BARCODE=0
 
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(FREETYPE_CFLAGS)))
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(GUMBO_CFLAGS)))
@@ -59,9 +65,12 @@ LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(LCMS2_CFLAGS))
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(LIBJPEG_CFLAGS)))
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(MUJS_CFLAGS)))
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(OPENJPEG_CFLAGS)))
+LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(BROTLI_CFLAGS)))
 
 ifdef USE_TESSERACT
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(TESSERACT_CFLAGS)))
+endif
+ifdef USE_LEPTONICA
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(LEPTONICA_CFLAGS)))
 endif
 
@@ -75,10 +84,14 @@ LOCAL_CFLAGS += $(filter-out -I%,$(LCMS2_CFLAGS))
 LOCAL_CFLAGS += $(filter-out -I%,$(LIBJPEG_CFLAGS))
 LOCAL_CFLAGS += $(filter-out -I%,$(MUJS_CFLAGS))
 LOCAL_CFLAGS += $(filter-out -I%,$(OPENJPEG_CFLAGS))
+LOCAL_CFLAGS += $(filter-out -I%,$(BROTLI_CFLAGS))
 
 ifdef USE_TESSERACT
-LOCAL_CFLAGS += -DHAVE_LEPTONICA -DHAVE_TESSERACT
+LOCAL_CFLAGS += -DHAVE_TESSERACT
 LOCAL_CFLAGS += $(filter-out -I%,$(TESSERACT_CFLAGS))
+endif
+ifdef USE_LEPTONICA
+LOCAL_CFLAGS += -DHAVE_LEPTONICA
 LOCAL_CFLAGS += $(filter-out -I%,$(LEPTONICA_CFLAGS))
 endif
 
@@ -94,6 +107,7 @@ LOCAL_SRC_FILES += $(wildcard $(MUPDF_PATH)/source/html/*.c)
 LOCAL_SRC_FILES += $(wildcard $(MUPDF_PATH)/source/helpers/pkcs7/*.c)
 
 LOCAL_SRC_FILES += $(wildcard $(MUPDF_PATH)/generated/resources/fonts/urw/*.c)
+LOCAL_SRC_FILES += $(wildcard $(MUPDF_PATH)/generated/resources/hyphen/*.c)
 
 LOCAL_CFLAGS += $(MUPDF_EXTRA_CFLAGS)
 
@@ -166,8 +180,16 @@ LOCAL_CFLAGS += $(filter-out -I%,$(OPENJPEG_CFLAGS) $(OPENJPEG_BUILD_CFLAGS))
 LOCAL_CFLAGS += $(MUPDF_EXTRA_CFLAGS)
 include $(BUILD_STATIC_LIBRARY)
 
+include $(CLEAR_VARS)
+LOCAL_MODULE += mupdf_thirdparty_brotli
+LOCAL_SRC_FILES += $(patsubst %,$(MUPDF_PATH)/%,$(BROTLI_SRC))
+LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(BROTLI_CFLAGS) $(BROTLI_BUILD_CFLAGS)))
+LOCAL_CFLAGS += $(filter-out -I%,$(BROTLI_CFLAGS) $(BROTLI_BUILD_CFLAGS))
+LOCAL_CFLAGS += $(MUPDF_EXTRA_CFLAGS)
+include $(BUILD_STATIC_LIBRARY)
+
 ifdef USE_TESSERACT
-# --- Build local static libraries for tesseract and leptonica ---
+# --- Build local static library for tesseract ---
 
 include $(CLEAR_VARS)
 LOCAL_MODULE += mupdf_thirdparty_tesseract
@@ -181,16 +203,23 @@ LOCAL_CFLAGS += $(MUPDF_EXTRA_CFLAGS)
 LOCAL_CPP_FEATURES := exceptions
 include $(BUILD_STATIC_LIBRARY)
 
+endif
+
+ifdef USE_LEPTONICA
+# --- Build local static library for leptonica ---
+
 include $(CLEAR_VARS)
 LOCAL_MODULE += mupdf_thirdparty_leptonica
+LOCAL_C_INCLUDES := $(MUPDF_PATH)/include
 LOCAL_SRC_FILES += $(patsubst %,$(MUPDF_PATH)/%,$(LEPTONICA_SRC))
+LOCAL_SRC_FILES += $(MUPDF_PATH)/source/fitz/leptonica-wrap.c
 LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(LEPTONICA_CFLAGS) $(LEPTONICA_BUILD_CFLAGS)))
 LOCAL_CFLAGS += $(filter-out -I%,$(LEPTONICA_CFLAGS) $(LEPTONICA_BUILD_CFLAGS))
 LOCAL_CFLAGS += -Wno-sign-compare -DANDROID_BUILD
 LOCAL_CFLAGS += $(MUPDF_EXTRA_CFLAGS)
 include $(BUILD_STATIC_LIBRARY)
 
-endif  #  USE_TESSERACT
+endif  #  USE_LEPTONICA
 
 include $(CLEAR_VARS)
 LOCAL_MODULE += mupdf_thirdparty_extract
@@ -199,18 +228,6 @@ LOCAL_C_INCLUDES += $(patsubst -I%,$(MUPDF_PATH)/%,$(filter -I%,$(EXTRACT_CFLAGS
 LOCAL_CFLAGS += $(filter-out -I%,$(EXTRACT_CFLAGS) $(EXTRACT_BUILD_CFLAGS))
 LOCAL_CFLAGS += $(MUPDF_EXTRA_CFLAGS)
 include $(BUILD_STATIC_LIBRARY)
-
-include $(CLEAR_VARS)
-LOCAL_MODULE := ssl
-LOCAL_SRC_FILES := pre-compiled-armv7/libssl.a
-$(warning $(LOCAL_SRC_FILES))
-include $(PREBUILT_STATIC_LIBRARY)
-
-include $(CLEAR_VARS)
-LOCAL_MODULE := crypto
-LOCAL_SRC_FILES := pre-compiled-armv7/libcrypto.a
-$(warning $(LOCAL_SRC_FILES))
-include $(PREBUILT_STATIC_LIBRARY)
 
 # --- Build the final JNI shared library ---
 
@@ -240,11 +257,12 @@ LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_lcms2
 LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_libjpeg
 LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_mujs
 LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_openjpeg
-LOCAL_STATIC_LIBRARIES += ssl
-LOCAL_STATIC_LIBRARIES += crypto
+LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_brotli
 
-ifdef USE_TESSERACT
+ifdef USE_LEPTONICA
 LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_leptonica
+endif
+ifdef USE_TESSERACT
 LOCAL_STATIC_LIBRARIES += mupdf_thirdparty_tesseract
 endif
 

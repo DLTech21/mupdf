@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -35,9 +35,9 @@ pnm_write_header(fz_context *ctx, fz_band_writer *writer, fz_colorspace *cs)
 	int alpha = writer->alpha;
 
 	if (writer->s != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "PNM writer cannot cope with spot colors");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "PNM writer cannot cope with spot colors");
 	if (cs && !fz_colorspace_is_gray(ctx, cs) && !fz_colorspace_is_rgb(ctx, cs))
-		fz_throw(ctx, FZ_ERROR_GENERIC, "pixmap must be grayscale or rgb to write as pnm");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "pixmap must be grayscale or rgb to write as pnm");
 
 	/* Treat alpha only as greyscale */
 	if (n == 1 && alpha)
@@ -45,7 +45,7 @@ pnm_write_header(fz_context *ctx, fz_band_writer *writer, fz_colorspace *cs)
 	n -= alpha;
 
 	if (alpha)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "PNM writer cannot cope with alpha");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "PNM writer cannot cope with alpha");
 
 	if (n == 1)
 		fz_write_printf(ctx, out, "P5\n");
@@ -66,7 +66,7 @@ pnm_write_band(fz_context *ctx, fz_band_writer *writer, int stride, int band_sta
 	int end = band_start + band_height;
 
 	if (n != 1 && n != 3)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "pixmap must be grayscale or rgb to write as pnm");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "pixmap must be grayscale or rgb to write as pnm");
 
 	if (!out)
 		return;
@@ -169,7 +169,7 @@ pam_write_header(fz_context *ctx, fz_band_writer *writer, fz_colorspace *cs)
 	int alpha = writer->alpha;
 
 	if (writer->s != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "PAM writer cannot cope with spot colors");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "PAM writer cannot cope with spot colors");
 
 	fz_write_printf(ctx, out, "P7\n");
 	fz_write_printf(ctx, out, "WIDTH %d\n", w);
@@ -187,7 +187,7 @@ pam_write_header(fz_context *ctx, fz_band_writer *writer, fz_colorspace *cs)
 	else if (n == 4 && !alpha && fz_colorspace_is_cmyk(ctx, cs)) fz_write_printf(ctx, out, "TUPLTYPE CMYK\n");
 	else if (n == 4 && alpha && fz_colorspace_is_cmyk(ctx, cs)) fz_write_printf(ctx, out, "TUPLTYPE CMYK_ALPHA\n");
 	else
-		fz_throw(ctx, FZ_ERROR_GENERIC, "pixmap must be alpha only, gray, rgb, or cmyk");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "pixmap must be alpha only, gray, rgb, or cmyk");
 	fz_write_printf(ctx, out, "ENDHDR\n");
 }
 
@@ -370,6 +370,37 @@ fz_save_pixmap_as_pam(fz_context *ctx, fz_pixmap *pixmap, const char *filename)
 }
 
 static fz_buffer *
+buffer_from_bitmap(fz_context *ctx, fz_bitmap *bitmap, fz_color_params color_params, int drop,
+	void (*do_write)(fz_context *ctx, fz_output *out, fz_bitmap *bitmap))
+{
+	fz_buffer *buf = NULL;
+	fz_output *out = NULL;
+
+	fz_var(buf);
+	fz_var(out);
+
+	fz_try(ctx)
+	{
+		buf = fz_new_buffer(ctx, 1024);
+		out = fz_new_output_with_buffer(ctx, buf);
+		do_write(ctx, out, bitmap);
+		fz_close_output(ctx, out);
+	}
+	fz_always(ctx)
+	{
+		if (drop)
+			fz_drop_bitmap(ctx, bitmap);
+		fz_drop_output(ctx, out);
+	}
+	fz_catch(ctx)
+	{
+		fz_drop_buffer(ctx, buf);
+		fz_rethrow(ctx);
+	}
+	return buf;
+}
+
+static fz_buffer *
 buffer_from_pixmap(fz_context *ctx, fz_pixmap *pix, fz_color_params color_params, int drop,
 	void (*do_write)(fz_context *ctx, fz_output *out, fz_pixmap *pix))
 {
@@ -398,6 +429,34 @@ buffer_from_pixmap(fz_context *ctx, fz_pixmap *pix, fz_color_params color_params
 		fz_rethrow(ctx);
 	}
 	return buf;
+}
+
+fz_buffer *
+fz_new_buffer_from_pixmap_as_pbm(fz_context *ctx, fz_pixmap *pix, fz_color_params color_params)
+{
+	fz_bitmap *bitmap = fz_new_bitmap_from_pixmap(ctx, pix, NULL);
+	return buffer_from_bitmap(ctx, bitmap, color_params, 1, fz_write_bitmap_as_pbm);
+}
+
+fz_buffer *
+fz_new_buffer_from_image_as_pbm(fz_context *ctx, fz_image *image, fz_color_params color_params)
+{
+	fz_bitmap *bitmap = fz_new_bitmap_from_image(ctx, image, NULL);
+	return  buffer_from_bitmap(ctx, bitmap, color_params, 1, fz_write_bitmap_as_pbm);
+}
+
+fz_buffer *
+fz_new_buffer_from_pixmap_as_pkm(fz_context *ctx, fz_pixmap *pix, fz_color_params color_params)
+{
+	fz_bitmap *bitmap = fz_new_bitmap_from_pixmap(ctx, pix, NULL);
+	return buffer_from_bitmap(ctx, bitmap, color_params, 1, fz_write_bitmap_as_pkm);
+}
+
+fz_buffer *
+fz_new_buffer_from_image_as_pkm(fz_context *ctx, fz_image *image, fz_color_params color_params)
+{
+	fz_bitmap *bitmap = fz_new_bitmap_from_image(ctx, image, NULL);
+	return  buffer_from_bitmap(ctx, bitmap, color_params, 1, fz_write_bitmap_as_pkm);
 }
 
 fz_buffer *

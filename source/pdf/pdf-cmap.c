@@ -507,9 +507,6 @@ add_range(fz_context *ctx, pdf_cmap *cmap, unsigned int low, unsigned int high, 
 {
 	int current;
 	cmap_splay *tree;
-	int i;
-	int inrange = 0;
-	unsigned int k, count;
 
 	if (low > high)
 	{
@@ -521,22 +518,6 @@ add_range(fz_context *ctx, pdf_cmap *cmap, unsigned int low, unsigned int high, 
 	{
 		fz_warn(ctx, "CMap is missing codespace range");
 		pdf_add_codespace(ctx, cmap, 0, 65535, 2);
-	}
-
-	count = high - low + 1;
-	for (k = 0; k < count; k++) {
-		unsigned int c = low + k;
-
-		inrange = 0;
-		for (i = 0; i < cmap->codespace_len; i++) {
-			if (cmap->codespace[i].low <= c && c <= cmap->codespace[i].high)
-				inrange = 1;
-		}
-		if (!inrange)
-		{
-			fz_warn(ctx, "ignoring CMap range (%u-%u) that is outside of the codespace", low, high);
-			return;
-		}
 	}
 
 	tree = cmap->tree;
@@ -565,9 +546,12 @@ add_range(fz_context *ctx, pdf_cmap *cmap, unsigned int low, unsigned int high, 
 				{
 					/* case 1, reduces to case 0 */
 					/* or case 2, deleting the node */
-					tree[current].out += high + 1 - tree[current].low;
-					tree[current].low = high + 1;
-					if (tree[current].low > tree[current].high)
+					if (!tree[current].many)
+					{
+						tree[current].out += high + 1 - tree[current].low;
+						tree[current].low = high + 1;
+					}
+					if (tree[current].low > tree[current].high || tree[current].many)
 					{
 						/* update lt/gt references that will be moved/stale after deleting current */
 						if (gt == (unsigned int) cmap->tlen - 1)
@@ -591,7 +575,8 @@ add_range(fz_context *ctx, pdf_cmap *cmap, unsigned int low, unsigned int high, 
 					/* case 3, reduces to case 5 */
 					int new_high = tree[current].high;
 					tree[current].high = low-1;
-					add_range(ctx, cmap, high+1, new_high, tree[current].out + high + 1 - tree[current].low, 0, tree[current].many);
+					assert(!tree[current].many);
+					add_range(ctx, cmap, high+1, new_high, tree[current].out + high + 1 - tree[current].low, 0, 0);
 					tree = cmap->tree;
 				}
 				/* Now look for where to move to next (left for case 0, right for case 5) */
@@ -694,17 +679,20 @@ static void
 add_mrange(fz_context *ctx, pdf_cmap *cmap, unsigned int low, int *out, int len)
 {
 	int out_pos;
+	int new_len = cmap->dlen + len + 1;
 
-	if (cmap->dlen + len + 1 > cmap->dcap)
+	if (new_len > cmap->dcap)
 	{
-		int new_cap = cmap->dcap ? cmap->dcap * 2 : 256;
+		int new_cap = cmap->dcap > 0 ? cmap->dcap : 256;
+		while (new_len > new_cap)
+			new_cap *= 2;
 		cmap->dict = fz_realloc_array(ctx, cmap->dict, new_cap, int);
 		cmap->dcap = new_cap;
 	}
 	out_pos = cmap->dlen;
 	cmap->dict[out_pos] = len;
 	memcpy(&cmap->dict[out_pos+1], out, sizeof(int)*len);
-	cmap->dlen += len + 1;
+	cmap->dlen = new_len;
 
 	add_range(ctx, cmap, low, low, out_pos, 1, 1);
 }
@@ -718,6 +706,12 @@ pdf_map_range_to_range(fz_context *ctx, pdf_cmap *cmap, unsigned int low, unsign
 void
 pdf_map_one_to_many(fz_context *ctx, pdf_cmap *cmap, unsigned int low, int *values, size_t len)
 {
+	int *ovalues = values;
+	/* len is always restricted to <= 256 by the callers. */
+	int local[PDF_MRANGE_CAP];
+
+	assert(len <= PDF_MRANGE_CAP);
+
 	/* Decode unicode surrogate pairs. */
 	/* Only the *-UCS2 CMaps use one-to-many mappings, so assuming unicode should be safe. */
 	if (len >= 2)
@@ -727,15 +721,22 @@ pdf_map_one_to_many(fz_context *ctx, pdf_cmap *cmap, unsigned int low, int *valu
 		 * with other chars. See bug 706131. */
 		for (i = 0, j = 0; i < len; i++, j++)
 		{
-			int hi = values[i];
+			int hi = ovalues[i];
 			if (hi >= 0xd800 && hi < 0xdc00 && i < len-1)
 			{
-				int lo = values[i+1];
+				int lo = ovalues[i+1];
 				if (lo >= 0xdc00 && lo < 0xe000)
 				{
 					hi = ((hi - 0xD800) << 10) + (lo - 0xDC00) + 0x10000;
 					i++;
 				}
+			}
+			if (values != local)
+			{
+				/* We can't change the callers data, so copy stuff in. */
+				if (j)
+					memcpy(local, values, sizeof(local[0]) * (j-1));
+				values = local;
 			}
 			values[j] = hi;
 		}

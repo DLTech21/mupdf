@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2022 Artifex Software, Inc.
+// Copyright (C) 2004-2024 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -83,6 +83,8 @@ typedef struct
 
 	float page_width;
 	float page_height;
+
+	float raster_scale; /* resolution of rasterized content (shadings, etc) */
 } svg_device;
 
 static fz_buffer *
@@ -240,7 +242,9 @@ svg_dev_stroke_state(fz_context *ctx, svg_device *sdev, const fz_stroke_state *s
 		exp = 1;
 	exp = stroke_state->linewidth/exp;
 
-	fz_append_printf(ctx, out, " stroke-width=\"%g\"", exp);
+	/* Leave 0 width lines as the default "1px". */
+	if (exp != 0)
+		fz_append_printf(ctx, out, " stroke-width=\"%g\"", exp);
 	fz_append_printf(ctx, out, " stroke-linecap=\"%s\"",
 		(stroke_state->start_cap == FZ_LINECAP_SQUARE ? "square" :
 			(stroke_state->start_cap == FZ_LINECAP_ROUND ? "round" : "butt")));
@@ -308,17 +312,6 @@ svg_dev_stroke_color(fz_context *ctx, svg_device *sdev, fz_colorspace *colorspac
 		fz_append_printf(ctx, out, " stroke-opacity=\"%g\"", alpha);
 }
 
-static void
-svg_font_family(fz_context *ctx, char buf[], int size, const char *name)
-{
-	/* Remove "ABCDEF+" prefix and "-Bold" suffix. */
-	char *p = strchr(name, '+');
-	if (p) fz_strlcpy(buf, p+1, size);
-	else fz_strlcpy(buf, name, size);
-	p = strrchr(buf, '-');
-	if (p) *p = 0;
-}
-
 static int
 find_first_char(fz_context *ctx, const fz_text_span *span, int i)
 {
@@ -368,7 +361,7 @@ svg_cluster_advance(fz_context *ctx, const fz_text_span *span, int i, int end)
 	while (i + n < end && span->items[i + n].gid == -1)
 		++n;
 	if (n > 1)
-		return fz_advance_glyph(ctx, span->font, span->items[i].gid, span->wmode) / n;
+		return span->items[i].adv / n;
 	return 0; /* this value is never used (since n==1) */
 }
 
@@ -376,7 +369,7 @@ static void
 svg_dev_text_span(fz_context *ctx, svg_device *sdev, fz_matrix ctm, const fz_text_span *span)
 {
 	fz_buffer *out = sdev->out;
-	char font_family[100];
+	char *font_family;
 	int is_bold, is_italic;
 	fz_matrix tm, inv_tm, final_tm;
 	fz_point p;
@@ -405,7 +398,7 @@ svg_dev_text_span(fz_context *ctx, svg_device *sdev, fz_matrix ctm, const fz_tex
 	tm.e = span->items[0].x;
 	tm.f = span->items[0].y;
 
-	svg_font_family(ctx, font_family, sizeof font_family, fz_font_name(ctx, span->font));
+	font_family = span->font->family;
 	is_bold = fz_font_is_bold(ctx, span->font);
 	is_italic = fz_font_is_italic(ctx, span->font);
 
@@ -570,6 +563,9 @@ svg_dev_data_text(fz_context *ctx, fz_buffer *out, int c)
 			fz_append_string(ctx, out, "&quot;");
 		else if (c >= 32 && c < 127 && c != '<' && c != '>')
 			fz_append_byte(ctx, out, c);
+		else if (c >= 0xD800 && c <= 0xDFFF)
+			/* no surrogate characters in SVG */
+			fz_append_printf(ctx, out, "&#xFFFD;");
 		else
 			fz_append_printf(ctx, out, "&#x%04x;", c);
 		fz_append_byte(ctx, out, '"');
@@ -699,7 +695,7 @@ svg_dev_clip_path(fz_context *ctx, fz_device *dev, const fz_path *path, int even
 	svg_dev_ctm(ctx, sdev, ctm);
 	svg_dev_path(ctx, sdev, path);
 	if (even_odd)
-		fz_append_printf(ctx, out, " fill-rule=\"evenodd\"");
+		fz_append_printf(ctx, out, " clip-rule=\"evenodd\"");
 	fz_append_printf(ctx, out, "/>\n</clipPath>\n");
 	out = end_def(ctx, sdev, 0);
 	fz_append_printf(ctx, out, "<g clip-path=\"url(#clip_%d)\">\n", num);
@@ -969,6 +965,7 @@ svg_dev_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *shade, fz_matrix c
 {
 	svg_device *sdev = (svg_device*)dev;
 	fz_buffer *out = sdev->out;
+	fz_rect rect;
 	fz_irect bbox;
 	fz_pixmap *pix;
 	fz_rect scissor = fz_device_current_scissor(ctx, dev);
@@ -984,7 +981,8 @@ svg_dev_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *shade, fz_matrix c
 		scissor.y1 = sdev->page_height;
 	}
 
-	bbox = fz_round_rect(fz_intersect_rect(fz_bound_shade(ctx, shade, ctm), scissor));
+	rect = fz_intersect_rect(fz_bound_shade(ctx, shade, ctm), scissor);
+	bbox = fz_round_rect(fz_transform_rect(rect, fz_scale(sdev->raster_scale, sdev->raster_scale)));
 	if (fz_is_empty_irect(bbox))
 		return;
 	pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, NULL, 1);
@@ -992,10 +990,10 @@ svg_dev_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *shade, fz_matrix c
 
 	fz_try(ctx)
 	{
-		fz_paint_shade(ctx, shade, NULL, ctm, pix, color_params, bbox, NULL, NULL);
+		fz_paint_shade(ctx, shade, NULL, fz_post_scale(ctm, sdev->raster_scale, sdev->raster_scale), pix, color_params, bbox, NULL, NULL);
 		if (alpha != 1.0f)
 			fz_append_printf(ctx, out, "<g opacity=\"%g\">\n", alpha);
-		fz_append_printf(ctx, out, "<image x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" xlink:href=\"", pix->x, pix->y, pix->w, pix->h);
+		fz_append_printf(ctx, out, "<image x=\"%g\" y=\"%g\" width=\"%g\" height=\"%g\" xlink:href=\"", pix->x/sdev->raster_scale, pix->y/sdev->raster_scale, pix->w/sdev->raster_scale, pix->h/sdev->raster_scale);
 		fz_append_pixmap_as_data_uri(ctx, out, pix);
 		fz_append_printf(ctx, out, "\"/>\n");
 		if (alpha != 1.0f)
@@ -1084,7 +1082,7 @@ svg_dev_begin_mask(fz_context *ctx, fz_device *dev, fz_rect bbox, int luminosity
 }
 
 static void
-svg_dev_end_mask(fz_context *ctx, fz_device *dev)
+svg_dev_end_mask(fz_context *ctx, fz_device *dev, fz_function *tr)
 {
 	svg_device *sdev = (svg_device*)dev;
 	fz_buffer *out = sdev->out;
@@ -1092,6 +1090,9 @@ svg_dev_end_mask(fz_context *ctx, fz_device *dev)
 
 	if (dev->container_len > 0)
 		mask = dev->container[dev->container_len-1].user;
+
+	if (tr)
+		fz_warn(ctx, "Ignoring Transfer Function");
 
 	fz_append_printf(ctx, out, "\"/>\n</mask>\n");
 	out = end_def(ctx, sdev, 0);
@@ -1152,7 +1153,7 @@ svg_dev_end_group(fz_context *ctx, fz_device *dev)
 }
 
 static int
-svg_dev_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id)
+svg_dev_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id, int doc_id)
 {
 	svg_device *sdev = (svg_device*)dev;
 	fz_buffer *out;
@@ -1280,7 +1281,7 @@ svg_dev_begin_layer(fz_context *ctx, fz_device *dev, const char *name)
 	fz_buffer *out = sdev->out;
 
 	sdev->layers++;
-	fz_append_printf(ctx, out, "<g id=\"layer_%d\" data-name=\"%s\">\n", sdev->layers, name);
+	fz_append_printf(ctx, out, "<g inkscape:groupmode=\"layer\" inkscape:label=%<>\n", name ? name : "");
 }
 
 static void
@@ -1314,8 +1315,9 @@ svg_dev_close_device(fz_context *ctx, fz_device *dev)
 	fz_write_string(ctx, out, "<svg");
 	fz_write_string(ctx, out, " xmlns=\"http://www.w3.org/2000/svg\"");
 	fz_write_string(ctx, out, " xmlns:xlink=\"http://www.w3.org/1999/xlink\"");
+	fz_write_string(ctx, out, " xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\"");
 	fz_write_string(ctx, out, " version=\"1.1\"");
-	fz_write_printf(ctx, out, " width=\"%gpt\" height=\"%gpt\" viewBox=\"0 0 %g %g\">\n",
+	fz_write_printf(ctx, out, " width=\"%g\" height=\"%g\" viewBox=\"0 0 %g %g\">\n",
 		sdev->page_width, sdev->page_height, sdev->page_width, sdev->page_height);
 
 	if (sdev->defs->len > 0)
@@ -1352,7 +1354,33 @@ svg_dev_drop_device(fz_context *ctx, fz_device *dev)
 	fz_free(ctx, sdev->images);
 }
 
-fz_device *fz_new_svg_device_with_id(fz_context *ctx, fz_output *out, float page_width, float page_height, int text_format, int reuse_images, int *id)
+void
+fz_parse_svg_device_options(fz_context *ctx, fz_svg_device_options *opts, const char *args)
+{
+	const char *val;
+
+	memset(opts, 0, sizeof *opts);
+
+	opts->text_format = FZ_SVG_TEXT_AS_PATH;
+	opts->reuse_images = 1;
+	opts->resolution = 72;
+	opts->id = NULL;
+
+	if (fz_has_option(ctx, args, "text", &val))
+	{
+		if (fz_option_eq(val, "text"))
+			opts->text_format = FZ_SVG_TEXT_AS_TEXT;
+		else if (fz_option_eq(val, "path"))
+			opts->text_format = FZ_SVG_TEXT_AS_PATH;
+	}
+	if (fz_has_option(ctx, args, "no-reuse-images", &val))
+		if (fz_option_eq(val, "yes"))
+			opts->reuse_images = 0;
+	if (fz_has_option(ctx, args, "resolution", &val))
+		opts->resolution = fz_atoi(val);
+}
+
+fz_device *fz_new_svg_device_with_options(fz_context *ctx, fz_output *out, float page_width, float page_height, fz_svg_device_options *opts)
 {
 	svg_device *dev = fz_new_derived_device(ctx, svg_device);
 
@@ -1394,18 +1422,35 @@ fz_device *fz_new_svg_device_with_id(fz_context *ctx, fz_output *out, float page
 	dev->main = fz_new_buffer(ctx, 4096);
 	dev->out = dev->main;
 
-	dev->save_id = id;
-	dev->id = id ? *id : 1;
+	dev->save_id = opts->id;
+	dev->id = opts->id ? *opts->id : 1;
 	dev->layers = 0;
-	dev->text_as_text = (text_format == FZ_SVG_TEXT_AS_TEXT);
-	dev->reuse_images = reuse_images;
+	dev->text_as_text = (opts->text_format == FZ_SVG_TEXT_AS_TEXT);
+	dev->reuse_images = opts->reuse_images;
 	dev->page_width = page_width;
 	dev->page_height = page_height;
+
+	dev->raster_scale = opts->resolution / 72.0f;
 
 	return (fz_device*)dev;
 }
 
+fz_device *fz_new_svg_device_with_id(fz_context *ctx, fz_output *out, float page_width, float page_height, int text_format, int reuse_images, int *id)
+{
+	fz_svg_device_options opts;
+	opts.text_format = text_format;
+	opts.reuse_images = reuse_images;
+	opts.resolution = 72;
+	opts.id = id;
+	return fz_new_svg_device_with_options(ctx, out, page_width, page_height, &opts);
+}
+
 fz_device *fz_new_svg_device(fz_context *ctx, fz_output *out, float page_width, float page_height, int text_format, int reuse_images)
 {
-	return fz_new_svg_device_with_id(ctx, out, page_width, page_height, text_format, reuse_images, NULL);
+	fz_svg_device_options opts;
+	opts.text_format = text_format;
+	opts.reuse_images = reuse_images;
+	opts.resolution = 72;
+	opts.id = NULL;
+	return fz_new_svg_device_with_options(ctx, out, page_width, page_height, &opts);
 }

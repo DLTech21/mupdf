@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2024 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -591,7 +591,7 @@ FUN(NativeDevice_beginGroup)(JNIEnv *env, jobject self, jobject jrect, jobject j
 	fz_context *ctx = get_context(env);
 	fz_device *dev = from_Device(env, self);
 	fz_rect rect = from_Rect(env, jrect);
-	fz_colorspace *cs = from_ColorSpace(env, self);
+	fz_colorspace *cs = from_ColorSpace(env, jcs);
 	NativeDeviceInfo *info;
 	int err;
 
@@ -630,7 +630,7 @@ FUN(NativeDevice_endGroup)(JNIEnv *env, jobject self)
 }
 
 JNIEXPORT jint JNICALL
-FUN(NativeDevice_beginTile)(JNIEnv *env, jobject self, jobject jarea, jobject jview, jfloat xstep, jfloat ystep, jobject jctm, jint id)
+FUN(NativeDevice_beginTile)(JNIEnv *env, jobject self, jobject jarea, jobject jview, jfloat xstep, jfloat ystep, jobject jctm, jint id, jint doc_id)
 {
 	fz_context *ctx = get_context(env);
 	fz_device *dev = from_Device(env, self);
@@ -647,7 +647,7 @@ FUN(NativeDevice_beginTile)(JNIEnv *env, jobject self, jobject jarea, jobject jv
 	if (err)
 		return 0;
 	fz_try(ctx)
-		i = fz_begin_tile_id(ctx, dev, area, view, xstep, ystep, ctm, id);
+		i = fz_begin_tile_tid(ctx, dev, area, view, xstep, ystep, ctm, id, doc_id);
 	fz_always(ctx)
 		unlockNativeDevice(env, info);
 	fz_catch(ctx)
@@ -678,7 +678,7 @@ FUN(NativeDevice_endTile)(JNIEnv *env, jobject self)
 }
 
 JNIEXPORT void JNICALL
-FUN(NativeDevice_beginStructure)(JNIEnv *env, jobject self, jint standard, jstring jraw, jint uid)
+FUN(NativeDevice_beginStructure)(JNIEnv *env, jobject self, jint standard, jstring jraw, jint idx)
 {
 	fz_context *ctx = get_context(env);
 	fz_device *dev = from_Device(env, self);
@@ -698,7 +698,7 @@ FUN(NativeDevice_beginStructure)(JNIEnv *env, jobject self, jint standard, jstri
 	if (err)
 		return;
 	fz_try(ctx)
-		fz_begin_structure(ctx, dev, standard, raw, uid);
+		fz_begin_structure(ctx, dev, standard, raw, idx);
 	fz_always(ctx)
 	{
 		(*env)->ReleaseStringUTFChars(env, jraw, raw);
@@ -730,7 +730,7 @@ FUN(NativeDevice_endStructure)(JNIEnv *env, jobject self)
 }
 
 JNIEXPORT void JNICALL
-FUN(NativeDevice_beginMetadata)(JNIEnv *env, jobject self, jint meta, jstring jtext)
+FUN(NativeDevice_beginMetatext)(JNIEnv *env, jobject self, jint meta, jstring jtext)
 {
 	fz_context *ctx = get_context(env);
 	fz_device *dev = from_Device(env, self);
@@ -761,7 +761,7 @@ FUN(NativeDevice_beginMetadata)(JNIEnv *env, jobject self, jint meta, jstring jt
 }
 
 JNIEXPORT void JNICALL
-FUN(NativeDevice_endMetadata)(JNIEnv *env, jobject self)
+FUN(NativeDevice_endMetatext)(JNIEnv *env, jobject self)
 {
 	fz_context *ctx = get_context(env);
 	fz_device *dev = from_Device(env, self);

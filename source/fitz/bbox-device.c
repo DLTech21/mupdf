@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2024 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -152,7 +152,7 @@ fz_bbox_begin_mask(fz_context *ctx, fz_device *dev, fz_rect rect, int luminosity
 }
 
 static void
-fz_bbox_end_mask(fz_context *ctx, fz_device *dev)
+fz_bbox_end_mask(fz_context *ctx, fz_device *dev, fz_function *tr)
 {
 	fz_bbox_device *bdev = (fz_bbox_device*)dev;
 	assert(bdev->ignore > 0);
@@ -172,7 +172,7 @@ fz_bbox_end_group(fz_context *ctx, fz_device *dev)
 }
 
 static int
-fz_bbox_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id)
+fz_bbox_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id, int doc_id)
 {
 	fz_bbox_device *bdev = (fz_bbox_device*)dev;
 	fz_bbox_add_rect(ctx, dev, fz_transform_rect(area, ctm), 0);

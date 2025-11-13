@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -131,8 +131,9 @@ bezier(fz_context *ctx, fz_rasterizer *rast, fz_matrix ctm, float flatness,
 	bezier(ctx, rast, ctm, flatness, xabcd, yabcd, xbcd, ybcd, xcd, ycd, xd, yd, depth + 1);
 }
 
+/* AIX uses 'quad' as a definition, so we can't use that here. */
 static void
-quad(fz_context *ctx, fz_rasterizer *rast, fz_matrix ctm, float flatness,
+quadratic(fz_context *ctx, fz_rasterizer *rast, fz_matrix ctm, float flatness,
 	float xa, float ya,
 	float xb, float yb,
 	float xc, float yc, int depth)
@@ -166,8 +167,8 @@ quad(fz_context *ctx, fz_rasterizer *rast, fz_matrix ctm, float flatness,
 
 	xabc *= 0.25f; yabc *= 0.25f;
 
-	quad(ctx, rast, ctm, flatness, xa, ya, xab, yab, xabc, yabc, depth + 1);
-	quad(ctx, rast, ctm, flatness, xabc, yabc, xbc, ybc, xc, yc, depth + 1);
+	quadratic(ctx, rast, ctm, flatness, xa, ya, xab, yab, xabc, yabc, depth + 1);
+	quadratic(ctx, rast, ctm, flatness, xabc, yabc, xbc, ybc, xc, yc, depth + 1);
 }
 
 typedef struct
@@ -219,7 +220,7 @@ flatten_quadto(fz_context *ctx, void *arg_, float x1, float y1, float x2, float 
 {
 	flatten_arg *arg = (flatten_arg *)arg_;
 
-	quad(ctx, arg->rast, arg->ctm, arg->flatness, arg->c.x, arg->c.y, x1, y1, x2, y2, 0);
+	quadratic(ctx, arg->rast, arg->ctm, arg->flatness, arg->c.x, arg->c.y, x1, y1, x2, y2, 0);
 	arg->c.x = x2;
 	arg->c.y = y2;
 }
@@ -907,8 +908,10 @@ fz_stroke_closepath(fz_context *ctx, sctx *s)
 		 * penultimate segment and the end segment. This is what we want. */
 		fz_add_line_join(ctx, s, s->seg[0].x, s->seg[0].y, s->beg[0].x, s->beg[0].y, s->beg[1].x, s->beg[1].y, 0);
 	}
-	else if (s->not_just_moves && s->cap == FZ_LINECAP_ROUND)
+	else if (s->cap == FZ_LINECAP_ROUND)
+	{
 		fz_add_line_dot(ctx, s, s->beg[0].x, s->beg[0].y);
+	}
 
 	s->seg[0] = s->beg[0];
 	s->sn = 0;
@@ -1098,6 +1101,23 @@ fz_dash_moveto(fz_context *ctx, struct sctx *s, float x, float y)
 	}
 }
 
+/*
+	Performs: a += (b-a) * i/n
+	allowing for FP inaccuracies that can cause a to "overrun" b.
+*/
+static float advance(float a, float b, float i, float n)
+{
+	float d = b - a;
+	float target = a + d * i/n;
+
+	if (d < 0 && target < b)
+		target = b;
+	else if (d > 0 && target > b)
+		target = b;
+
+	return target;
+}
+
 static void
 fz_dash_lineto(fz_context *ctx, struct sctx *s, float bx, float by, int from_bezier)
 {
@@ -1105,7 +1125,7 @@ fz_dash_lineto(fz_context *ctx, struct sctx *s, float bx, float by, int from_bez
 	float total, used, ratio, tail;
 	float ax, ay;
 	float mx, my;
-	float old_bx, old_by;
+	float old_bx = 0, old_by = 0;
 	int n;
 	int dash_cap = s->stroke->dash_cap;
 
@@ -1144,7 +1164,9 @@ fz_dash_lineto(fz_context *ctx, struct sctx *s, float bx, float by, int from_bez
 		}
 		ax = s->rect.x1;	/* d < 0, dx < 0 */
 a_moved_horizontally:	/* d and dx have the same sign */
-		ay += dy * d/dx;
+		assert((d > 0 && dx > 0) || (d < 0 && dx < 0));
+		assert(dx != 0);
+		ay = advance(ay, by, d, dx);
 		used = total * d/dx;
 		total -= used;
 		dx = bx - ax;
@@ -1176,7 +1198,9 @@ a_moved_horizontally:	/* d and dx have the same sign */
 		}
 		ay = s->rect.y1;	/* d < 0, dy < 0 */
 a_moved_vertically:	/* d and dy have the same sign */
-		ax += dx * d/dy;
+		assert((d > 0 && dy > 0) || (d < 0 && dy < 0));
+		assert(dy != 0);
+		ax = advance(ax, bx, d, dy);
 		d = total * d/dy;
 		total -= d;
 		used += d;
@@ -1224,7 +1248,11 @@ a_moved_vertically:	/* d and dy have the same sign */
 	}
 
 	/* Now if bx is off screen, bring it back */
-	if ((d = bx - s->rect.x0) < 0)
+	if (dx == 0)
+	{
+		/* Earlier stages can have moved a to be b, while leaving it completely off screen. */
+	}
+	else if ((d = bx - s->rect.x0) < 0)
 	{
 		old_bx = bx;
 		old_by = by;
@@ -1237,14 +1265,20 @@ a_moved_vertically:	/* d and dy have the same sign */
 		old_by = by;
 		bx = s->rect.x1;	/* d > 0, dx > 0 */
 b_moved_horizontally:	/* d and dx have the same sign */
-		by -= dy * d/dx;
+		assert((d > 0 && dx > 0) || (d < 0 && dx < 0));
+		assert(dx != 0);
+		by = advance(by, ay, d, dx);
 		tail = total * d/dx;
 		total -= tail;
 		dx = bx - ax;
 		dy = by - ay;
 	}
 	/* Then vertically... */
-	if ((d = by - s->rect.y0) < 0)
+	if (dy == 0)
+	{
+		/* Earlier stages can have moved a to be b, while leaving it completely off screen. */
+	}
+	else if ((d = by - s->rect.y0) < 0)
 	{
 		old_bx = bx;
 		old_by = by;
@@ -1258,7 +1292,9 @@ b_moved_horizontally:	/* d and dx have the same sign */
 		old_by = by;
 		by = s->rect.y1;	/* d > 0, dy > 0 */
 b_moved_vertically:	/* d and dy have the same sign */
-		bx -= dx * d/dy;
+		assert((d > 0 && dy > 0) || (d < 0 && dy < 0));
+		assert(dy != 0);
+		bx = advance(bx, ax, d, dy);
 		t = total * d/dy;
 		tail += t;
 		total -= t;

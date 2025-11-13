@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -149,43 +149,92 @@ fz_drop_image(fz_context *ctx, fz_image *image)
 }
 
 static void
-fz_mask_color_key(fz_pixmap *pix, int n, int bpc, const int *colorkey)
+fz_mask_color_key(fz_context *ctx, fz_pixmap *pix, int n, int bpc, const int *colorkey_in, int indexed)
 {
 	unsigned char *p = pix->samples;
 	int w;
 	int k, t;
 	int h = pix->h;
 	size_t stride = pix->stride - pix->w * (size_t)pix->n;
-	int scaledcolorkey[FZ_MAX_COLORS * 2];
+	int colorkey[FZ_MAX_COLORS * 2];
 	int scale, shift, max;
 
 	if (pix->w == 0)
 		return;
 
-	for (k = 0; k < 2 * n; k++)
-		scaledcolorkey[k] = fz_clampi(colorkey[k], 0, (1 << bpc) - 1);
+	if (indexed)
+	{
+		/* no upscaling or downshifting needed for indexed images */
+		scale = 1;
+		shift = 0;
+	}
+	else
+	{
+		switch (bpc)
+		{
+		case 1: scale = 255; shift = 0; break;
+		case 2: scale = 85; shift = 0; break;
+		case 4: scale = 17; shift = 0; break;
+		default:
+		case 8: scale = 1; shift = 0; break;
+		case 16: scale = 1; shift = 8; break;
+		case 24: scale = 1; shift = 16; break;
+		case 32: scale = 1; shift = 24; break;
+		}
+	}
 
 	switch (bpc)
 	{
-	case 1: scale = 255; shift = 0; max = 1; break;
-	case 2: scale = 85; shift = 0; max = 3; break;
-	case 4: scale = 17; shift = 0; max = 15; break;
+	case 1: max = 1; break;
+	case 2: max = 3; break;
+	case 4: max = 15; break;
 	default:
-	case 8: scale = 1; shift = 0; max = 0xff; break;
-	case 16: scale = 1; shift = 8; max = 0xffff; break;
-	case 24: scale = 1; shift = 16; max = 0xffffff; break;
-	case 32: scale = 1; shift = 24; max = 0xffffffff; break;
+	case 8: max = 0xff; break;
+	case 16: max = 0xffff; break;
+	case 24: max = 0xffffff; break;
+	case 32: max = 0xffffffff; break;
 	}
 
 	for (k = 0; k < 2 * n; k++)
-		scaledcolorkey[k] = fz_clampi(colorkey[k], 0, max);
+	{
+		colorkey[k] = colorkey_in[k];
 
-	if (scale > 1)
-		for (k = 0; k < 2 * n; k++)
-			scaledcolorkey[k] *= scale;
-	else if (shift > 0)
-		for (k = 0; k < 2 * n; k++)
-			scaledcolorkey[k] >>= shift;
+		if (colorkey[k] > max)
+		{
+			if (indexed && bpc == 1)
+			{
+				if (k == 0)
+				{
+					fz_warn(ctx, "first color key masking value out of range in 1bpc indexed image, ignoring color key masking");
+					return;
+				}
+				fz_warn(ctx, "later color key masking value out of range in 1bpc indexed image, assumed to be 1");
+				colorkey[k] = 1;
+			}
+			else if (bpc != 1)
+			{
+				fz_warn(ctx, "color key masking value out of range, masking to valid range");
+				colorkey[k] &= max;
+			}
+		}
+
+		if (colorkey[k] < 0 || colorkey[k] > max)
+		{
+			fz_warn(ctx, "color key masking value out of range, clamping to valid range");
+			colorkey[k] = fz_clampi(colorkey[k], 0, max);
+		}
+
+		if (scale > 1)
+		{
+			/* scale up color key masking value so it can be compared with samples. */
+			colorkey[k] *= scale;
+		}
+		else if (shift > 0)
+		{
+			/* shifting down color key masking value so it can be compared with samples. */
+			colorkey[k] >>= shift;
+		}
+	}
 
 	while (h--)
 	{
@@ -194,7 +243,7 @@ fz_mask_color_key(fz_pixmap *pix, int n, int bpc, const int *colorkey)
 		{
 			t = 1;
 			for (k = 0; k < n; k++)
-				if (p[k] < scaledcolorkey[k * 2] || p[k] > scaledcolorkey[k * 2 + 1])
+				if (p[k] < colorkey[k * 2] || p[k] > colorkey[k * 2 + 1])
 					t = 0;
 			if (t)
 				for (k = 0; k < pix->n; k++)
@@ -351,8 +400,8 @@ static void fz_compute_image_key(fz_context *ctx, fz_image *image, fz_matrix *ct
 		float frac_w = (float) (key->rect.x1 - key->rect.x0) / image->w;
 		float frac_h = (float) (key->rect.y1 - key->rect.y0) / image->h;
 		float a = ctm->a * frac_w;
-		float b = ctm->b * frac_h;
-		float c = ctm->c * frac_w;
+		float b = ctm->b * frac_w;
+		float c = ctm->c * frac_h;
 		float d = ctm->d * frac_h;
 		*w = sqrtf(a * a + b * b);
 		*h = sqrtf(c * c + d * d);
@@ -645,7 +694,7 @@ fz_decomp_image_from_stream(fz_context *ctx, fz_stream *stm, fz_compressed_image
 
 		/* color keyed transparency */
 		if (image->use_colorkey && !image->mask)
-			fz_mask_color_key(tile, image->n, image->bpc, image->colorkey);
+			fz_mask_color_key(ctx, tile, image->n, image->bpc, image->colorkey, indexed);
 
 		if (indexed)
 		{
@@ -710,6 +759,23 @@ drop_pixmap_image(fz_context *ctx, fz_image *image_)
 	fz_pixmap_image *image = (fz_pixmap_image *)image_;
 
 	fz_drop_pixmap(ctx, image->tile);
+}
+
+int
+fz_is_lossy_image(fz_context *ctx, fz_image *image)
+{
+	fz_compressed_buffer *cbuf = fz_compressed_image_buffer(ctx, image);
+	if (cbuf)
+	{
+		switch (cbuf->params.type)
+		{
+		case FZ_IMAGE_JPEG:
+		case FZ_IMAGE_JPX:
+		case FZ_IMAGE_JXR:
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static fz_pixmap *
@@ -1016,9 +1082,63 @@ fz_get_pixmap_from_image(fz_context *ctx, fz_image *image, const fz_irect *subar
 	fz_catch(ctx)
 	{
 		/* Do nothing */
+		fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+		fz_report_error(ctx);
 	}
 
 	return tile;
+}
+
+fz_pixmap *
+fz_get_pixmap_mask_from_image(fz_context *ctx, fz_image *image, const fz_irect *subarea, fz_matrix *ctm, int *dw, int *dh, int in_smask)
+{
+	fz_pixmap *pix1, *pix2;
+
+	pix1 = fz_get_pixmap_from_image(ctx, image, subarea, ctm, dw, dh);
+	if (pix1->n == 1 && pix1->alpha)
+		return pix1;
+
+	if (pix1->n == 1)
+	{
+		fz_warn(ctx, "convert gray to alpha for image mask");
+		fz_try(ctx)
+			pix2 = fz_alpha_from_gray(ctx, pix1);
+		fz_always(ctx)
+			fz_drop_pixmap(ctx, pix1);
+		fz_catch(ctx)
+			fz_rethrow(ctx);
+		return pix2;
+	}
+	else if (pix1->n == 3)
+	{
+		fz_warn(ctx, "convert rgb to alpha for image mask");
+		fz_try(ctx)
+			pix2 = fz_alpha_from_rgb(ctx, pix1);
+		fz_always(ctx)
+			fz_drop_pixmap(ctx, pix1);
+		fz_catch(ctx)
+			fz_rethrow(ctx);
+		return pix2;
+	}
+	else
+	{
+		fz_color_params cp = fz_default_color_params;
+
+		if (in_smask)
+			cp.ri |= FZ_RI_IN_SOFTMASK;
+
+		fz_warn(ctx, "strange colorspace for image mask (%s)", pix1->colorspace->name);
+		fz_try(ctx)
+			pix2 = fz_convert_pixmap(ctx, pix1, fz_device_gray(ctx), NULL, NULL, cp, 0);
+		fz_always(ctx)
+			fz_drop_pixmap(ctx, pix1);
+		fz_catch(ctx)
+			fz_rethrow(ctx);
+		fz_drop_colorspace(ctx, pix2->colorspace);
+		pix2->colorspace = NULL;
+		pix2->alpha = 1;
+		return pix2;
+	}
 }
 
 fz_pixmap *
@@ -1065,8 +1185,8 @@ fz_new_image_from_pixmap(fz_context *ctx, fz_pixmap *pixmap, fz_image *mask)
 
 fz_image *
 fz_new_image_of_size(fz_context *ctx, int w, int h, int bpc, fz_colorspace *colorspace,
-		int xres, int yres, int interpolate, int imagemask, float *decode,
-		int *colorkey, fz_image *mask, size_t size,
+		int xres, int yres, int interpolate, int imagemask, const float *decode,
+		const int *colorkey, fz_image *mask, size_t size,
 		fz_image_get_pixmap_fn *get_pixmap,
 		fz_image_get_size_fn *get_size,
 		fz_drop_image_fn *drop)
@@ -1091,6 +1211,8 @@ fz_new_image_of_size(fz_context *ctx, int w, int h, int bpc, fz_colorspace *colo
 	image->colorspace = fz_keep_colorspace(ctx, colorspace);
 	image->interpolate = interpolate;
 	image->imagemask = imagemask;
+	image->intent = 0;
+	image->has_intent = 0;
 	image->use_colorkey = (colorkey != NULL);
 	if (colorkey)
 		memcpy(image->colorkey, colorkey, sizeof(int)*image->n*2);
@@ -1147,8 +1269,8 @@ compressed_image_get_size(fz_context *ctx, fz_image *image)
 fz_image *
 fz_new_image_from_compressed_buffer(fz_context *ctx, int w, int h,
 	int bpc, fz_colorspace *colorspace,
-	int xres, int yres, int interpolate, int imagemask, float *decode,
-	int *colorkey, fz_compressed_buffer *buffer, fz_image *mask)
+	int xres, int yres, int interpolate, int imagemask, const float *decode,
+	const int *colorkey, fz_compressed_buffer *buffer, fz_image *mask)
 {
 	fz_compressed_image *image;
 
@@ -1210,6 +1332,7 @@ fz_image_type_name(int type)
 	case FZ_IMAGE_FLATE: return "flate";
 	case FZ_IMAGE_LZW: return "lzw";
 	case FZ_IMAGE_RLD: return "rld";
+	case FZ_IMAGE_BROTLI: return "brotli";
 	case FZ_IMAGE_BMP: return "bmp";
 	case FZ_IMAGE_GIF: return "gif";
 	case FZ_IMAGE_JBIG2: return "jbig2";
@@ -1231,6 +1354,7 @@ fz_lookup_image_type(const char *type)
 	if (!strcmp(type, "flate")) return FZ_IMAGE_FLATE;
 	if (!strcmp(type, "lzw")) return FZ_IMAGE_LZW;
 	if (!strcmp(type, "rld")) return FZ_IMAGE_RLD;
+	if (!strcmp(type, "brotli")) return FZ_IMAGE_BROTLI;
 	if (!strcmp(type, "bmp")) return FZ_IMAGE_BMP;
 	if (!strcmp(type, "gif")) return FZ_IMAGE_GIF;
 	if (!strcmp(type, "jbig2")) return FZ_IMAGE_JBIG2;
@@ -1285,7 +1409,7 @@ fz_new_image_from_buffer(fz_context *ctx, fz_buffer *buffer)
 {
 	fz_compressed_buffer *bc;
 	int w, h, xres, yres;
-	fz_colorspace *cspace;
+	fz_colorspace *cspace = NULL;
 	size_t len = buffer->len;
 	unsigned char *buf = buffer->data;
 	fz_image *image = NULL;
@@ -1294,7 +1418,7 @@ fz_new_image_from_buffer(fz_context *ctx, fz_buffer *buffer)
 	uint8_t orientation = 0;
 
 	if (len < 8)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "unknown image file format");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "unknown image file format");
 
 	type = fz_recognize_image_format(ctx, buf);
 	bpc = 8;
@@ -1304,7 +1428,7 @@ fz_new_image_from_buffer(fz_context *ctx, fz_buffer *buffer)
 		fz_load_pnm_info(ctx, buf, len, &w, &h, &xres, &yres, &cspace);
 		break;
 	case FZ_IMAGE_JPX:
-		fz_load_jpx_info(ctx, buf, len, &w, &h, &xres, &yres, &cspace);
+		fz_load_jpx_info(ctx, buf, len, &w, &h, &xres, &yres, &cspace, NULL);
 		break;
 	case FZ_IMAGE_JPEG:
 		fz_load_jpeg_info(ctx, buf, len, &w, &h, &xres, &yres, &cspace, &orientation);
@@ -1332,16 +1456,19 @@ fz_new_image_from_buffer(fz_context *ctx, fz_buffer *buffer)
 		bpc = 1;
 		break;
 	default:
-		fz_throw(ctx, FZ_ERROR_GENERIC, "unknown image file format");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "unknown image file format");
 	}
 
 	fz_try(ctx)
 	{
-		bc = fz_malloc_struct(ctx, fz_compressed_buffer);
+		bc = fz_new_compressed_buffer(ctx);
 		bc->buffer = fz_keep_buffer(ctx, buffer);
 		bc->params.type = type;
 		if (type == FZ_IMAGE_JPEG)
+		{
 			bc->params.u.jpeg.color_transform = -1;
+			bc->params.u.jpeg.invert_cmyk = 1;
+		}
 		image = fz_new_image_from_compressed_buffer(ctx, w, h, bpc, cspace, xres, yres, 0, 0, NULL, NULL, bc, NULL);
 		image->orientation = orientation;
 	}
@@ -1351,6 +1478,45 @@ fz_new_image_from_buffer(fz_context *ctx, fz_buffer *buffer)
 		fz_rethrow(ctx);
 
 	return image;
+}
+
+fz_image *
+fz_new_jpx_image_from_buffer(fz_context *ctx, fz_buffer *buffer, fz_colorspace *defcs)
+{
+	fz_compressed_buffer *bc;
+	fz_colorspace *cs = NULL;
+	int w, h, xres, yres;
+	fz_image *img = NULL;
+
+	fz_load_jpx_info(ctx, buffer->data, buffer->len, &w, &h, &xres, &yres, &cs, defcs);
+
+	fz_try(ctx)
+	{
+		bc = fz_new_compressed_buffer(ctx);
+		bc->buffer = fz_keep_buffer(ctx, buffer);
+		bc->params.type = FZ_IMAGE_JPX;
+
+		img =  fz_new_image_from_compressed_buffer(ctx, w, h, 8, cs, xres, yres, 0, 0, NULL, NULL, bc, NULL);
+	}
+	fz_always(ctx)
+		fz_drop_colorspace(ctx, cs);
+	fz_catch(ctx)
+		fz_rethrow(ctx);
+
+	return img;
+}
+
+int
+fz_compressed_image_type(fz_context *ctx, fz_image *image)
+{
+	fz_compressed_image *cim;
+
+	if (image == NULL || image->drop_image != drop_compressed_image)
+		return FZ_IMAGE_UNKNOWN;
+
+	cim = (fz_compressed_image *)image;
+
+	return cim->buffer->params.type;
 }
 
 fz_image *

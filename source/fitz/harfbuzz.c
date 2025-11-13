@@ -27,6 +27,8 @@
 
 #include "mupdf/fitz.h"
 
+#if FZ_ENABLE_HTML_ENGINE
+
 #include "hb.h"
 
 #include <assert.h>
@@ -136,7 +138,7 @@ static fz_context *get_hb_context(void)
 
 void fz_hb_lock(fz_context *ctx)
 {
-	fz_lock(ctx, FZ_LOCK_FREETYPE);
+	fz_ft_lock(ctx);
 
 	set_hb_context(ctx);
 }
@@ -145,7 +147,7 @@ void fz_hb_unlock(fz_context *ctx)
 {
 	set_hb_context(NULL);
 
-	fz_unlock(ctx, FZ_LOCK_FREETYPE);
+	fz_ft_unlock(ctx);
 }
 
 void *fz_hb_malloc(size_t size)
@@ -183,3 +185,5 @@ void fz_hb_free(void *ptr)
 
 	fz_free(ctx, ptr);
 }
+
+#endif

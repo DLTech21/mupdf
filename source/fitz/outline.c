@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -60,21 +60,21 @@ int fz_outline_iterator_down(fz_context *ctx, fz_outline_iterator *iter)
 int fz_outline_iterator_insert(fz_context *ctx, fz_outline_iterator *iter, fz_outline_item *item)
 {
 	if (iter->insert == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Document type does not support Outline editing");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Document type does not support Outline editing");
 	return iter->insert(ctx, iter, item);
 }
 
 int fz_outline_iterator_delete(fz_context *ctx, fz_outline_iterator *iter)
 {
 	if (iter->del == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Document type does not support Outline editing");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Document type does not support Outline editing");
 	return iter->del(ctx, iter);
 }
 
 void fz_outline_iterator_update(fz_context *ctx, fz_outline_iterator *iter, fz_outline_item *item)
 {
 	if (iter->update == NULL)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Document type does not support Outline editing");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Document type does not support Outline editing");
 	iter->update(ctx, iter, item);
 }
 
@@ -282,6 +282,10 @@ iter_std_item(fz_context *ctx, fz_outline_iterator *iter_)
 	iter->item.is_open = iter->current->is_open;
 	iter->item.title = iter->current->title;
 	iter->item.uri = iter->current->uri;
+	iter->item.r = iter->current->r / 255.0f;
+	iter->item.g = iter->current->g / 255.0f;
+	iter->item.b = iter->current->b / 255.0f;
+	iter->item.flags = iter->current->flags;
 
 	return &iter->item;
 }

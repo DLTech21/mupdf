@@ -33,11 +33,15 @@ Internal testing only - environmental variables:
         run swig.
 '''
 
+# Work around pip 25/pyproject_hooks 1.2.0 path meddling:
+import sys
+if sys.meta_path[0].__class__.__name__ == '_BackendPathFinder':
+    sys.meta_path.pop(0)
+
 import os
 import platform
 import re
 import subprocess
-import sys
 import time
 
 
@@ -70,6 +74,15 @@ def windows():
 def macos():
     s = platform.system()
     return s == 'Darwin'
+
+@cache
+def openbsd():
+    s = platform.system()
+    return s == 'OpenBSD'
+
+@cache
+def msys2():
+    return platform.system().startswith('MSYS_NT-')
 
 @cache
 def build_dir():
@@ -109,6 +122,20 @@ def mupdf_version():
     time to the base version in include/mupdf/fitz/version.h. For example
     '1.18.0.20210330.1800'.
     '''
+    return mupdf_version_internal()
+
+
+def mupdf_version_internal(t_tuple=None):
+    '''
+    Return version number, with doctest check for broken behaviour with leading
+    zeros.
+
+    >>> t0str = '2024-06-06-00:00'
+    >>> t0tuple = time.strptime(t0str, '%Y-%m-%d-%H:%M')
+    >>> v = mupdf_version_internal(t0tuple)
+    >>> print(v, file=sys.stderr)
+    >>> assert v.endswith('.202406060000')
+    '''
     with open(f'{root_dir()}/include/mupdf/fitz/version.h') as f:
         text = f.read()
     m = re.search('\n#define FZ_VERSION "([^"]+)"\n', text)
@@ -141,8 +168,16 @@ def mupdf_version():
     #
     # This also allows us to easily experiment on test.pypi.org.
     #
-    ret = base_version + time.strftime(".%Y%m%d.%H%M")
+    # We have to avoid the time component(s) containing `.0` as this is
+    # prohibited by PEP-440.
+    #
+    if t_tuple is None:
+        t_tuple = time.localtime()
+    tt = time.strftime(".%Y%m%d%H%M", t_tuple)
+    tail = tt.replace('.0', '.')
+    ret = base_version + tail
     #log(f'Have created version number: {ret}')
+    pipcl._assert_version_pep_440(ret)
     return ret
 
 
@@ -258,7 +293,7 @@ def sdist():
             'platform/c++/include/mupdf/functions.h',
             'platform/c++/include/mupdf/internal.h',
             'platform/c++/windows_mupdf.def',
-            'platform/python/mupdfcpp_swig.cpp',
+            'platform/python/mupdfcpp_swig.i.cpp',
             ]
     return paths
 
@@ -305,30 +340,30 @@ def build():
     if windows():
         infix = '' if sys.maxsize == 2**31 - 1 else '64'
         names = [
-                f'mupdfcpp{infix}.dll', # C and C++.
-                '_mupdf.pyd',           # Python internals.
-                'mupdf.py',             # Python.
+                f'{build_dir()}/mupdfcpp{infix}.dll',   # C and C++.
+                f'{build_dir()}/_mupdf.pyd',            # Python internals.
+                f'{build_dir()}/mupdf.py',              # Python.
                 ]
     elif macos():
         log( f'Contents of {build_dir()} are:')
         for leaf in os.listdir(build_dir()):
             log( f'    {leaf}')
         names = [
-                'libmupdf.dylib',   # C.
-                'libmupdfcpp.so',   # C++.
-                '_mupdf.so',        # Python internals.
-                'mupdf.py',         # Python.
+                f'{build_dir()}/libmupdf.dylib',    # C.
+                f'{build_dir()}/libmupdfcpp.so',    # C++.
+                f'{build_dir()}/_mupdf.so',         # Python internals.
+                f'{build_dir()}/mupdf.py',          # Python.
                 ]
     else:
         names = [
-                'libmupdf.so',      # C.
-                'libmupdfcpp.so',   # C++.
-                '_mupdf.so',        # Python internals.
-                'mupdf.py',         # Python.
+                pipcl.get_soname(f'{build_dir()}/libmupdf.so'),     # C.
+                pipcl.get_soname(f'{build_dir()}/libmupdfcpp.so'),  # C++.
+                f'{build_dir()}/_mupdf.so',                         # Python internals.
+                f'{build_dir()}/mupdf.py',                          # Python.
                 ]
     paths = []
     for name in names:
-        paths.append((f'{build_dir()}/{name}', name))
+        paths.append((name, ''))
 
     log(f'build(): returning: {paths}')
     return paths
@@ -447,13 +482,16 @@ https://mupdf.com/r/C-and-Python-APIs
 
 """
 
+with open(f'{root_dir()}/COPYING') as f:
+    license = f.read()
+
 mupdf_package = pipcl.Package(
         name = 'mupdf',
         version = mupdf_version(),
         root = root_dir(),
         summary = 'Python bindings for MuPDF library.',
         description = description,
-        classifiers = [
+        classifier = [
                 'Development Status :: 4 - Beta',
                 'Intended Audience :: Developers',
                 'License :: OSI Approved :: GNU Affero General Public License v3',
@@ -461,13 +499,15 @@ mupdf_package = pipcl.Package(
                 ],
         author = 'Artifex Software, Inc.',
         author_email = 'support@artifex.com',
-        url_docs = 'https://mupdf.com/r/C-and-Python-APIs',
-        url_home = 'https://mupdf.com/',
-        url_source = 'https://git.ghostscript.com/?p=mupdf.git',
-        url_tracker = 'https://bugs.ghostscript.com/',
+        home_page = 'https://mupdf.com/',
+        project_url = [
+            ('Documentation, https://mupdf.com/r/C-and-Python-APIs/'),
+            ('Source, https://git.ghostscript.com/?p=mupdf.git'),
+            ('Tracker, https://bugs.ghostscript.com/'),
+            ],
         keywords = 'PDF',
         platform = None,
-        license_files = ['COPYING'],
+        license = license,
         fn_build = build,
         fn_clean = clean,
         fn_sdist = sdist,
@@ -488,6 +528,29 @@ def build_sdist( sdist_directory, config_settings=None):
             sdist_directory,
             config_settings,
             )
+
+def get_requires_for_build_wheel(config_settings=None):
+    '''
+    Adds to pyproject.toml:[build-system]:requires, allowing programmatic
+    control over what packages we require.
+    '''
+    ret = list()
+    ret.append('setuptools')
+    if openbsd():
+        #print(f'OpenBSD: libclang not available via pip; assuming `pkg_add py3-llvm`.')
+        pass
+    else:
+        ret.append('libclang')
+    if msys2():
+        #print(f'msys2: pip install of swig does not build; assuming `pacman -S swig`.')
+        pass
+    elif openbsd():
+        #print(f'OpenBSD: pip install of swig does not build; assuming `pkg_add swig`.')
+        pass
+    else:
+        ret.append( 'swig')
+    return ret
+
 
 # Allow us to be used as a pre-PIP-517 setup.py script.
 #

@@ -46,13 +46,13 @@ fz_parse_pclm_options(fz_context *ctx, fz_pclm_options *opts, const char *args)
 		else if (fz_option_eq(val, "flate"))
 			opts->compress = 1;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Unsupported PCLm compression %s (none, or flate only)", val);
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Unsupported PCLm compression %s (none, or flate only)", val);
 	}
 	if (fz_has_option(ctx, args, "strip-height", &val))
 	{
 		int i = fz_atoi(val);
 		if (i <= 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Unsupported PCLm strip height %d (suggest 16)", i);
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Unsupported PCLm strip height %d (suggest 16)", i);
 		opts->strip_height = i;
 	}
 
@@ -135,11 +135,11 @@ pclm_write_header(fz_context *ctx, fz_band_writer *writer_, fz_colorspace *cs)
 	fz_buffer *buf = NULL;
 
 	if (a != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "PCLm cannot write alpha channel");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "PCLm cannot write alpha channel");
 	if (s != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "PCLm cannot write spot colors");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "PCLm cannot write spot colors");
 	if (n != 3 && n != 1)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "PCLm expected to be Grayscale or RGB");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "PCLm expected to be Grayscale or RGB");
 
 	fz_free(ctx, writer->stripbuf);
 	writer->stripbuf = NULL;
@@ -327,7 +327,7 @@ fz_band_writer *fz_new_pclm_band_writer(fz_context *ctx, fz_output *out, const f
 }
 
 void
-fz_save_pixmap_as_pclm(fz_context *ctx, fz_pixmap *pixmap, char *filename, int append, const fz_pclm_options *pclm)
+fz_save_pixmap_as_pclm(fz_context *ctx, fz_pixmap *pixmap, const char *filename, int append, const fz_pclm_options *pclm)
 {
 	fz_output *out = fz_new_output_with_path(ctx, filename, append);
 	fz_try(ctx)

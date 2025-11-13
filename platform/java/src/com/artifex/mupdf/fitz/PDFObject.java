@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -81,6 +81,16 @@ public class PDFObject implements Iterable<PDFObject>
 
 	public native byte[] readStream();
 	public native byte[] readRawStream();
+	public Buffer readStreamBuffer() {
+		Buffer b = new Buffer();
+		b.writeBytes(readStream());
+		return b;
+	}
+	public Buffer readRawStreamBuffer() {
+		Buffer b = new Buffer();
+		b.writeBytes(readRawStream());
+		return b;
+	}
 
 	public native void writeObject(PDFObject obj);
 	private native void writeStreamBuffer(Buffer buf);
@@ -139,6 +149,9 @@ public class PDFObject implements Iterable<PDFObject>
 	private native void putDictionaryStringFloat(String name, float f);
 	private native void putDictionaryStringString(String name, String str);
 	private native void putDictionaryStringPDFObject(String name, PDFObject obj);
+	private native void putDictionaryStringRect(String name, Rect r);
+	private native void putDictionaryStringMatrix(String name, Matrix m);
+	private native void putDictionaryStringDate(String name, long secs);
 
 	private native void putDictionaryPDFObjectBoolean(PDFObject name, boolean b);
 	private native void putDictionaryPDFObjectInteger(PDFObject name, int i);
@@ -187,6 +200,18 @@ public class PDFObject implements Iterable<PDFObject>
 
 	public void put(String name, PDFObject obj) {
 		putDictionaryStringPDFObject(name, obj);
+	}
+
+	public void put(String name, Rect r) {
+		putDictionaryStringRect(name, r);
+	}
+
+	public void put(String name, Matrix m) {
+		putDictionaryStringMatrix(name, m);
+	}
+
+	public void put(String name, Date time) {
+		putDictionaryStringDate(name, time.getTime());
 	}
 
 	public void put(PDFObject name, boolean b) {
@@ -301,4 +326,6 @@ public class PDFObject implements Iterable<PDFObject>
 			throw new UnsupportedOperationException();
 		}
 	}
+
+	public native boolean isFilespec();
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2022 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -176,7 +176,7 @@ public class ViewerCore {
 				edit = doc.hasPermission(Document.PERMISSION_EDIT);
 				annotate = doc.hasPermission(Document.PERMISSION_ANNOTATE);
 				form = doc.hasPermission(Document.PERMISSION_FORM);
-				accessibility = doc.hasPermission(Document.PERMISSION_ACCESSBILITY);
+				accessibility = doc.hasPermission(Document.PERMISSION_ACCESSIBILITY);
 				assemble = doc.hasPermission(Document.PERMISSION_ASSEMBLE);
 				printHq = doc.hasPermission(Document.PERMISSION_PRINT_HQ);
 				reflowable = doc.isReflowable();
@@ -408,7 +408,7 @@ public class ViewerCore {
 		});
 	}
 
-	public void renderPage(final Matrix ctm, final Rect bbox, final boolean icc, final int antialias, final boolean invert, final boolean tint, final int tintBlack, final int tintWhite, final OnException onException) {
+	public void renderPage(final Matrix ctm, final Rect bbox, final boolean icc, final int antialias, final boolean invert, final boolean tint, final int tintBlack, final int tintWhite, final Cookie cookie, final OnException onException) {
 		worker.add(new Worker.Task() {
 			Pixmap pixmap = null;
 			Rect[] links = null;
@@ -452,7 +452,7 @@ public class ViewerCore {
 				Context.setAntiAliasLevel(antialias);
 
 				DrawDevice dev = new DrawDevice(pixmap);
-				page.run(dev, ctm, null);
+				page.run(dev, ctm, cookie);
 				dev.close();
 				dev.destroy();
 

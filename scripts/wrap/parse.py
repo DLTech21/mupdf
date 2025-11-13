@@ -2,6 +2,7 @@
 Support for accessing parse tree for MuPDF headers.
 '''
 
+import collections
 import os
 import sys
 import time
@@ -9,9 +10,10 @@ import time
 import jlib
 
 try:
-    import clang
+    import clang.cindex
 except ImportError as e:
-    jlib.log( 'Warning, could not import clang: {e}')
+    if '--venv' not in sys.argv:
+        jlib.log( 'Warning, could not import clang: {e}')
     clang = None
 
 from . import classes
@@ -63,8 +65,9 @@ def get_fz_extras( tu, fzname):
 def get_children(cursor):
     '''
     Like cursor.get_children() but recurses into cursors with
-    clang.cindex.CursorKind.UNEXPOSED_DECL, which picks up top-level items
-    marked with `extern "C"`.
+    clang.cindex.CursorKind.UNEXPOSED_DECL which picks up top-level items
+    marked with `extern "C"`, and clang.cindex.CursorKind.LINKAGE_SPEC which
+    picks up items inside `extern "C" {...}`.
     '''
     verbose = 0
     for cursor in cursor.get_children():
@@ -77,7 +80,13 @@ def get_children(cursor):
                 if verbose and cursor.spelling:
                     jlib.log( '{cursor.spelling=}')
                 yield cursor2
-        elif 1:
+        elif cursor.kind == clang.cindex.CursorKind.LINKAGE_SPEC:
+            # extern "C" {...}
+            for cursor2 in cursor.get_children():
+                if verbose and cursor.spelling:
+                    jlib.log( '{cursor.spelling=}')
+                yield cursor2
+        else:
             if verbose and cursor.spelling:
                 jlib.log( '{cursor.spelling=}')
             yield cursor
@@ -276,12 +285,14 @@ def has_refs( tu, type_):
                     if not ret:
                         if verbose:
                             jlib.log(
-                                    'Cannot find .refs member or we only have forward'
+                                    '{type_.spelling=}: Cannot find .refs member or we only have forward'
                                     ' declaration, so have to hard-code the size and offset'
                                     ' of the refs member.'
                                     )
                         if base_type_cursor.is_definition():
                             if key == 'pdf_document':
+                                ret = 'super.refs', 32
+                            elif key == 'pdf_page':
                                 ret = 'super.refs', 32
                             elif key == 'fz_pixmap':
                                 ret = 'storable.refs', 32
@@ -478,6 +489,10 @@ class Arg:
 
 get_args_cache = dict()
 
+# get_args() needs to know how to get something hashable from a clang.cindex.Cursor.
+if clang:
+    g_cursor_is_hashable = issubclass(clang.cindex.Cursor, collections.abc.Hashable)
+
 def get_args( tu, cursor, include_fz_context=False, skip_first_alt=False, verbose=False):
     '''
     Yields Arg instance for each arg of the function at <cursor>.
@@ -500,7 +515,10 @@ def get_args( tu, cursor, include_fz_context=False, skip_first_alt=False, verbos
     #
     if verbose:
         jlib.log( '## Looking at args of {cursor.spelling=}')
-    key = tu, cursor.location.file, cursor.location.line, include_fz_context, skip_first_alt
+    if g_cursor_is_hashable:
+        key = tu, cursor, include_fz_context, skip_first_alt
+    else:
+        key = tu, cursor.location.file, cursor.location.line, include_fz_context, skip_first_alt
     ret = get_args_cache.get( key)
     if not verbose and state.state_.show_details(cursor.spelling):
         verbose = True
@@ -531,7 +549,7 @@ def get_args( tu, cursor, include_fz_context=False, skip_first_alt=False, verbos
                 if verbose:
                     jlib.log( '{extras.opaque=} {base_type_cursor.kind=} {base_type_cursor.is_definition()=}')
                 if extras.opaque:
-                    # E.g. we don't have access to defintion of fz_separation,
+                    # E.g. we don't have access to definition of fz_separation,
                     # but it is marked in classes.classextras with opaque=true,
                     # so there will be a wrapper class.
                     alt = base_type_cursor
@@ -853,7 +871,7 @@ def find_wrappable_function_with_arg0_type_cache_populate( tu):
 
                 fnname_to_method_structname[ fnname] = arg0
 
-    jlib.log( f'populating find_wrappable_function_with_arg0_type_cache took {time.time()-t0}s')
+    jlib.log1( f'populating find_wrappable_function_with_arg0_type_cache took {time.time()-t0:.2f}s')
 
 
 def find_wrappable_function_with_arg0_type( tu, structname):
@@ -865,7 +883,7 @@ def find_wrappable_function_with_arg0_type( tu, structname):
 
         First non-context param is <structname> (by reference, pointer or value).
 
-        If return type is a fz_* struc (by reference, pointer or value), the
+        If return type is a fz_* struct (by reference, pointer or value), the
         corresponding wrapper class has a raw constructor.
     '''
     find_wrappable_function_with_arg0_type_cache_populate( tu)

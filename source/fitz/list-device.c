@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -229,6 +229,7 @@ cmd_needs_alignment(fz_display_command cmd)
 		cmd == FZ_CMD_FILL_IMAGE ||
 		cmd == FZ_CMD_FILL_IMAGE_MASK ||
 		cmd == FZ_CMD_CLIP_IMAGE_MASK ||
+		cmd == FZ_CMD_END_MASK ||
 		cmd == FZ_CMD_DEFAULT_COLORSPACES);
 }
 
@@ -348,7 +349,7 @@ fz_append_display_node(
 	if (color == NULL)
 	{
 		if (colorspace)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Colorspace cannot be specified without color.");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Colorspace cannot be specified without color.");
 	}
 	else
 	{
@@ -531,7 +532,7 @@ fz_append_display_node(
 			ctm_flags |= CTM_CHANGE_EF, size += SIZE_IN_NODES(2*sizeof(float));
 		node.ctm = ctm_flags;
 	}
-	if (stroke && (writer->stroke == NULL || stroke != writer->stroke))
+	if (stroke && (writer->stroke == NULL || !fz_stroke_state_eq(ctx, stroke, writer->stroke)))
 	{
 		pad_size_for_pointer(list, &size);
 		stroke_off = size;
@@ -611,7 +612,7 @@ fz_append_display_node(
 	{
 		fz_try(ctx)
 		{
-			my_stroke = fz_keep_stroke_state(ctx, stroke);
+			my_stroke = fz_clone_stroke_state(ctx, stroke);
 		}
 		fz_catch(ctx)
 		{
@@ -726,7 +727,7 @@ fz_append_display_node(
 		fz_stroke_state **out_stroke = (fz_stroke_state **)(void *)(&node_ptr[stroke_off]);
 		*out_stroke = my_stroke;
 		fz_drop_stroke_state(ctx, writer->stroke);
-		/* Can never fail as my_stroke was kept above */
+		/* Can never fail as my_stroke was cloned above */
 		writer->stroke = fz_keep_stroke_state(ctx, my_stroke);
 	}
 	if (private_data_len)
@@ -1153,22 +1154,30 @@ fz_list_begin_mask(fz_context *ctx, fz_device *dev, fz_rect rect, int luminosity
 }
 
 static void
-fz_list_end_mask(fz_context *ctx, fz_device *dev)
+fz_list_end_mask(fz_context *ctx, fz_device *dev, fz_function *tr)
 {
-	fz_append_display_node(
-		ctx,
-		dev,
-		FZ_CMD_END_MASK,
-		0, /* flags */
-		NULL, /* rect */
-		NULL, /* path */
-		NULL, /* color */
-		NULL, /* colorspace */
-		NULL, /* alpha */
-		NULL, /* ctm */
-		NULL, /* stroke */
-		NULL, /* private_data */
-		0); /* private_data_len */
+	fz_function *tr2 = fz_keep_function(ctx, tr);
+
+	fz_try(ctx)
+		fz_append_display_node(
+			ctx,
+			dev,
+			FZ_CMD_END_MASK,
+			0, /* flags */
+			NULL, /* rect */
+			NULL, /* path */
+			NULL, /* color */
+			NULL, /* colorspace */
+			NULL, /* alpha */
+			NULL, /* ctm */
+			NULL, /* stroke */
+			&tr2, /* private_data */
+			sizeof(tr2)); /* private_data_len */
+	fz_catch(ctx)
+	{
+		fz_drop_function(ctx, tr);
+		fz_rethrow(ctx);
+	}
 }
 
 static void
@@ -1224,10 +1233,11 @@ typedef struct
 	float ystep;
 	fz_rect view;
 	int id;
+	int doc_id;
 } fz_list_tile_data;
 
 static int
-fz_list_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id)
+fz_list_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id, int doc_id)
 {
 	fz_list_tile_data tile;
 
@@ -1235,6 +1245,7 @@ fz_list_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, 
 	tile.ystep = ystep;
 	tile.view = view;
 	tile.id = id;
+	tile.doc_id = doc_id;
 	fz_append_display_node(
 		ctx,
 		dev,
@@ -1335,6 +1346,8 @@ fz_list_set_default_colorspaces(fz_context *ctx, fz_device *dev, fz_default_colo
 static void
 fz_list_begin_layer(fz_context *ctx, fz_device *dev, const char *layer_name)
 {
+	size_t len = layer_name ? strlen(layer_name) : 0;
+
 	fz_append_display_node(
 		ctx,
 		dev,
@@ -1347,8 +1360,8 @@ fz_list_begin_layer(fz_context *ctx, fz_device *dev, const char *layer_name)
 		NULL, /* alpha */
 		NULL,
 		NULL, /* stroke */
-		layer_name, /* private_data */
-		1+strlen(layer_name)); /* private_data_len */
+		len ? layer_name : "", /* private_data */
+		len + 1); /* private_data_len */
 }
 
 static void
@@ -1371,7 +1384,7 @@ fz_list_end_layer(fz_context *ctx, fz_device *dev)
 }
 
 static void
-fz_list_begin_structure(fz_context *ctx, fz_device *dev, fz_structure standard, const char *raw, int uid)
+fz_list_begin_structure(fz_context *ctx, fz_device *dev, fz_structure standard, const char *raw, int idx)
 {
 	unsigned char *data;
 	size_t len = (raw ? strlen(raw) : 0);
@@ -1389,13 +1402,13 @@ fz_list_begin_structure(fz_context *ctx, fz_device *dev, fz_structure standard, 
 		NULL,
 		NULL, /* stroke */
 		NULL, /* private_data */
-		len+2+sizeof(uid)); /* private_data_len */
+		len+2+sizeof(idx)); /* private_data_len */
 	data[0] = (char)standard;
-	memcpy(data+1, &uid, sizeof(uid));
+	memcpy(data+1, &idx, sizeof(idx));
 	if (len)
-		memcpy(data+1+sizeof(uid), raw, len+1);
+		memcpy(data+1+sizeof(idx), raw, len+1);
 	else
-		data[1+sizeof(uid)] = 0;
+		data[1+sizeof(idx)] = 0;
 }
 
 static void
@@ -1635,6 +1648,10 @@ fz_drop_display_list_imp(fz_context *ctx, fz_storable *list_)
 		case FZ_CMD_CLIP_IMAGE_MASK:
 			align_node_for_pointer(&node);
 			fz_drop_image(ctx, *(fz_image **)node);
+			break;
+		case FZ_CMD_END_MASK:
+			align_node_for_pointer(&node);
+			fz_drop_function(ctx, *(fz_function **)node);
 			break;
 		case FZ_CMD_DEFAULT_COLORSPACES:
 			align_node_for_pointer(&node);
@@ -1903,6 +1920,10 @@ fz_run_display_list(fz_context *ctx, fz_display_list *list, fz_device *dev, fz_m
 			empty = fz_is_empty_rect(fz_intersect_rect(trans_rect, scissor));
 		}
 
+		/* clipped starts out as 0. It only goes non-zero here if we move inside
+		 * an 'empty' region. Whenever clipped is non zero, or we are in an empty
+		 * region, we therefore may need to increment clipped according to the
+		 * nesting. */
 		if (clipped || empty)
 		{
 			switch (n.cmd)
@@ -1916,6 +1937,13 @@ fz_run_display_list(fz_context *ctx, fz_display_list *list, fz_device *dev, fz_m
 			case FZ_CMD_BEGIN_GROUP:
 				clipped++;
 				continue;
+			case FZ_CMD_BEGIN_STRUCTURE:
+			case FZ_CMD_END_STRUCTURE:
+			case FZ_CMD_BEGIN_METATEXT:
+			case FZ_CMD_END_METATEXT:
+				/* These may not nest as nicely as we'd like. Just ignore them for
+				 * the purposes of clipping. */
+				break;
 			case FZ_CMD_POP_CLIP:
 			case FZ_CMD_END_GROUP:
 				if (!clipped)
@@ -2001,7 +2029,8 @@ visible:
 				fz_begin_mask(ctx, dev, trans_rect, n.flags & 1, colorspace, color, color_params);
 				break;
 			case FZ_CMD_END_MASK:
-				fz_end_mask(ctx, dev);
+				align_node_for_pointer(&node);
+				fz_end_mask_tr(ctx, dev, *(fz_function **)node);
 				break;
 			case FZ_CMD_BEGIN_GROUP:
 				fz_begin_group(ctx, dev, trans_rect, colorspace, (n.flags & ISOLATED) != 0, (n.flags & KNOCKOUT) != 0, (n.flags>>2), alpha);
@@ -2014,11 +2043,10 @@ visible:
 				int cached;
 				fz_list_tile_data *data;
 				fz_rect tile_rect;
-				align_node_for_pointer(&node);
 				data = (fz_list_tile_data *)node;
 				tiled++;
 				tile_rect = data->view;
-				cached = fz_begin_tile_id(ctx, dev, rect, tile_rect, data->xstep, data->ystep, trans_ctm, data->id);
+				cached = fz_begin_tile_tid(ctx, dev, rect, tile_rect, data->xstep, data->ystep, trans_ctm, data->id, data->doc_id);
 				if (cached)
 					tile_skip_depth = 1;
 				break;
@@ -2038,7 +2066,6 @@ visible:
 				fz_set_default_colorspaces(ctx, dev, *(fz_default_colorspaces **)node);
 				break;
 			case FZ_CMD_BEGIN_LAYER:
-				align_node_for_pointer(&node);
 				fz_begin_layer(ctx, dev, (const char *)node);
 				break;
 			case FZ_CMD_END_LAYER:
@@ -2047,11 +2074,10 @@ visible:
 			case FZ_CMD_BEGIN_STRUCTURE:
 			{
 				const unsigned char *data;
-				int uid;
-				align_node_for_pointer(&node);
+				int idx;
 				data = (const unsigned char *)node;
-				memcpy(&uid, data+1, sizeof(uid));
-				fz_begin_structure(ctx, dev, (fz_structure)data[0], (const char *)(data[1+sizeof(uid)] == 0 ? NULL : &data[1+sizeof(uid)]), uid);
+				memcpy(&idx, data+1, sizeof(idx));
+				fz_begin_structure(ctx, dev, (fz_structure)data[0], (const char *)(&data[1+sizeof(idx)]), idx);
 				break;
 			}
 			case FZ_CMD_END_STRUCTURE:
@@ -2063,7 +2089,7 @@ visible:
 				const char *text;
 				data = (const unsigned char *)node;
 				text = (const char *)&data[1];
-				fz_begin_metatext(ctx, dev, (fz_metatext)data[0], (text[0] == 0 ? NULL : text));
+				fz_begin_metatext(ctx, dev, (fz_metatext)data[0], text);
 				break;
 			}
 			case FZ_CMD_END_METATEXT:
@@ -2073,11 +2099,22 @@ visible:
 		}
 		fz_catch(ctx)
 		{
+			if (fz_caught(ctx) == FZ_ERROR_SYSTEM)
+			{
+				fz_drop_colorspace(ctx, colorspace);
+				fz_drop_stroke_state(ctx, stroke);
+				fz_drop_path(ctx, path);
+				fz_rethrow(ctx);
+			}
 			/* Swallow the error */
 			if (cookie)
 				cookie->errors++;
 			if (fz_caught(ctx) == FZ_ERROR_ABORT)
+			{
+				fz_ignore_error(ctx);
 				break;
+			}
+			fz_report_error(ctx);
 			fz_warn(ctx, "Ignoring error during interpretation");
 		}
 	}

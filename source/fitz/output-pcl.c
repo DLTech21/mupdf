@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -281,7 +281,7 @@ void fz_pcl_preset(fz_context *ctx, fz_pcl_options *opts, const char *preset)
 	else if (!strcmp(preset, "oce9050"))
 		copy_opts(opts, &fz_pcl_options_oce9050);
 	else
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Unknown preset '%s'", preset);
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Unknown preset '%s'", preset);
 }
 
 fz_pcl_options *
@@ -304,7 +304,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		case 1: opts->features = (opts->features & ~PCL_ANY_SPACING) | PCL3_SPACING; break;
 		case 2: opts->features = (opts->features & ~PCL_ANY_SPACING) | PCL4_SPACING; break;
 		case 3: opts->features = (opts->features & ~PCL_ANY_SPACING) | PCL5_SPACING; break;
-		default: fz_throw(ctx, FZ_ERROR_GENERIC, "Unsupported PCL spacing %d (0-3 only)", atoi(val));
+		default: fz_throw(ctx, FZ_ERROR_ARGUMENT, "Unsupported PCL spacing %d (0-3 only)", atoi(val));
 		}
 	}
 	if (fz_has_option(ctx, args, "mode2", &val))
@@ -314,7 +314,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= PCL_MODE_2_COMPRESSION;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for mode2 value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for mode2 value");
 	}
 	if (fz_has_option(ctx, args, "mode3", &val))
 	{
@@ -323,7 +323,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= PCL_MODE_3_COMPRESSION;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for mode3 value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for mode3 value");
 	}
 	if (fz_has_option(ctx, args, "eog_reset", &val))
 	{
@@ -332,7 +332,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= PCL_END_GRAPHICS_DOES_RESET;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for eog_reset value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for eog_reset value");
 	}
 	if (fz_has_option(ctx, args, "has_duplex", &val))
 	{
@@ -341,7 +341,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= PCL_HAS_DUPLEX;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for has_duplex value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for has_duplex value");
 	}
 	if (fz_has_option(ctx, args, "has_papersize", &val))
 	{
@@ -350,7 +350,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= PCL_CAN_SET_PAPER_SIZE;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for has_papersize value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for has_papersize value");
 	}
 	if (fz_has_option(ctx, args, "has_copies", &val))
 	{
@@ -359,7 +359,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= PCL_CAN_PRINT_COPIES;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for has_papersize value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for has_papersize value");
 	}
 	if (fz_has_option(ctx, args, "is_ljet4pjl", &val))
 	{
@@ -368,7 +368,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= HACK__IS_A_LJET4PJL;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for is_ljet4pjl value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for is_ljet4pjl value");
 	}
 	if (fz_has_option(ctx, args, "is_oce9050", &val))
 	{
@@ -377,7 +377,7 @@ fz_parse_pcl_options(fz_context *ctx, fz_pcl_options *opts, const char *args)
 		else if (fz_option_eq(val, "yes"))
 			opts->features |= HACK__IS_A_OCE9050;
 		else
-			fz_throw(ctx, FZ_ERROR_GENERIC, "Expected 'yes' or 'no' for is_oce9050 value");
+			fz_throw(ctx, FZ_ERROR_ARGUMENT, "Expected 'yes' or 'no' for is_oce9050 value");
 	}
 
 	return opts;
@@ -417,7 +417,13 @@ pcl_header(fz_context *ctx, fz_output *out, fz_pcl_options *pcl, int num_copies,
 			fz_write_string(ctx, out, "\033%-12345X@PJL\r\n@PJL ENTER LANGUAGE = PCL\r\n");
 		fz_write_string(ctx, out, "\033E"); /* reset printer */
 		/* Reset the margins */
-		fz_write_string(ctx, out, "\033&10e-180u36Z");
+		/* ESC & l # E  =  Top Margin in decipoints */
+		fz_write_string(ctx, out, "\033&l0E");
+		/* ESC & l # U  =  Left (Long-Edge) offset registration */
+		/* I don't like it that we have to hardcode -180 decipoints in here, but it seems to work. */
+		fz_write_string(ctx, out, "\033&l-180U");
+		/* ESC & l # Z  =  Top (Short-Edge) offset registration */
+		fz_write_string(ctx, out, "\033&l0Z");
 		/* If the printer supports it, set orientation */
 		if (pcl->features & PCL_HAS_ORIENTATION)
 		{
@@ -574,8 +580,6 @@ static const pcl_papersize papersizes[] =
 	{ e10x14,            "10x14",        3000, 4200}
 };
 
-#define num_elems(X) (sizeof(X)/sizeof(*X))
-
 static void guess_paper_size(fz_pcl_options *pcl, int w, int h, int xres, int yres)
 {
 	int size;
@@ -589,7 +593,7 @@ static void guess_paper_size(fz_pcl_options *pcl, int w, int h, int xres, int yr
 	h = h * 300 / xres;
 
 	/* Look for an exact match */
-	for (size = 0; size < (int)num_elems(papersizes); size++)
+	for (size = 0; size < (int)nelem(papersizes); size++)
 	{
 		if (papersizes[size].code > eCustomPaperSize && (pcl->features & PCL_HAS_RICOH_PAPER_SIZES) == 0)
 			continue;
@@ -604,7 +608,7 @@ static void guess_paper_size(fz_pcl_options *pcl, int w, int h, int xres, int yr
 
 	/* If we didn't find an exact match, find the smallest one that's
 	 * larger. Consider orientation if our printer supports it. */
-	if (size == num_elems(papersizes))
+	if (size == nelem(papersizes))
 	{
 		if ((pcl->features & PCL_CAN_SET_CUSTOM_PAPER_SIZE) != 0)
 		{
@@ -616,7 +620,7 @@ static void guess_paper_size(fz_pcl_options *pcl, int w, int h, int xres, int yr
 			/* Send the next larger one (minimise waste) */
 			int i;
 			int best_waste = INT_MAX;
-			for (i = 0; i < (int)num_elems(papersizes); i++)
+			for (i = 0; i < (int)nelem(papersizes); i++)
 			{
 				int waste;
 				if (papersizes[i].code > eCustomPaperSize && (pcl->features & PCL_HAS_RICOH_PAPER_SIZES) == 0)
@@ -640,9 +644,9 @@ static void guess_paper_size(fz_pcl_options *pcl, int w, int h, int xres, int yr
 		}
 	}
 
-	/* Now, size = The best size we have (or num_elems(papersizes)) if it's too big */
+	/* Now, size = The best size we have (or nelem(papersizes)) if it's too big */
 
-	if (size < (int)num_elems(papersizes))
+	if (size < (int)nelem(papersizes))
 		pcl->paper_size = papersizes[size].code;
 	else
 		pcl->paper_size = eCustomPaperSize; /* Custom */
@@ -770,11 +774,11 @@ color_pcl_write_header(fz_context *ctx, fz_band_writer *writer_, fz_colorspace *
 	int yres = writer->super.yres;
 
 	if (a != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "color PCL cannot write alpha channel");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "color PCL cannot write alpha channel");
 	if (s != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "color PCL cannot write spot colors");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "color PCL cannot write spot colors");
 	if (n != 3)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "color PCL must be RGB");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "color PCL must be RGB");
 
 	writer->linebuf = Memento_label(fz_malloc(ctx, w * 3 * 2), "color_pcl_linebuf");
 
@@ -840,6 +844,7 @@ color_pcl_compress_column(fz_context *ctx, color_pcl_band_writer *writer, const 
 					break;
 				blanks++;
 				y++;
+				sp += stride;
 			}
 
 			if (blanks)
@@ -1174,11 +1179,11 @@ mono_pcl_write_header(fz_context *ctx, fz_band_writer *writer_, fz_colorspace *c
 	int max_mode_3_size;
 
 	if (writer->super.alpha != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "mono PCL cannot write alpha channel");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "mono PCL cannot write alpha channel");
 	if (writer->super.s != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "mono PCL cannot write spot colors");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "mono PCL cannot write spot colors");
 	if (writer->super.n != 1)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "mono PCL must be grayscale");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "mono PCL must be grayscale");
 
 	line_size = (w + 7)/8;
 	max_mode_2_size = line_size + (line_size/127) + 1;

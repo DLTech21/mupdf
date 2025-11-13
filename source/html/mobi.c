@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2022 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -41,7 +41,7 @@ skip_bytes(fz_context *ctx, fz_stream *stm, size_t len)
 {
 	size_t skipped = fz_skip(ctx, stm, len);
 	if (skipped < len)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "premature end in data");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "premature end in data");
 }
 
 static void
@@ -50,7 +50,7 @@ mobi_read_text_none(fz_context *ctx, fz_buffer *out, fz_stream *stm, uint32_t si
 	unsigned char buf[4096];
 	size_t n;
 	if (size > 4096)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "text block too large");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "text block too large");
 	n = fz_read(ctx, stm, buf, size);
 	if (n < size)
 		fz_warn(ctx, "premature end in mobi uncompressed text data");
@@ -150,11 +150,11 @@ mobi_read_data(fz_context *ctx, fz_buffer *out, fz_stream *stm, uint32_t *offset
 		fz_rethrow(ctx);
 
 	if (compression != COMPRESSION_NONE && compression != COMPRESSION_PALMDOC)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "unknown compression method");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "unknown compression method");
 	if (text_encoding != TEXT_ENCODING_LATIN_1 &&
 		text_encoding != TEXT_ENCODING_1252 &&
 		text_encoding != TEXT_ENCODING_UTF8)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "unknown text encoding");
+		fz_throw(ctx, FZ_ERROR_FORMAT, "unknown text encoding");
 
 	for (i = 1; i <= record_count && i < total_count; ++i)
 	{
@@ -187,13 +187,13 @@ mobi_read_data(fz_context *ctx, fz_buffer *out, fz_stream *stm, uint32_t *offset
 	if (text_encoding != TEXT_ENCODING_UTF8 || format == FORMAT_TEXT)
 	{
 		unsigned char *p;
-		size_t i, n = fz_buffer_extract(ctx, out, &p);
+		size_t j, z = fz_buffer_extract(ctx, out, &p);
 		fz_resize_buffer(ctx, out, 0);
 		if (format == FORMAT_TEXT)
 			fz_append_string(ctx, out, "<html><head><style>body{white-space:pre-wrap}</style></head><body>");
-		for (i = 0; i < n; ++i)
+		for (j = 0; j < z; ++j)
 		{
-			int c = p[i];
+			int c = p[j];
 			if (format == FORMAT_TEXT && (c == '<' || c == '>' || c == '&'))
 			{
 				if (c == '<')
@@ -277,7 +277,7 @@ fz_extract_html_from_mobi(fz_context *ctx, fz_buffer *mobi)
 		// record info list count
 		n = fz_read_uint16(ctx, stm);
 
-		minoffset = (uint32_t)fz_tell(ctx, stm) + n * 2 * sizeof (uint32_t) - 1;
+		minoffset = (uint32_t)(fz_tell(ctx, stm) + n * 2 * sizeof (uint32_t) - 1);
 		maxoffset = (uint32_t)mobi->len;
 
 		// record info list
@@ -289,20 +289,19 @@ fz_extract_html_from_mobi(fz_context *ctx, fz_buffer *mobi)
 				continue;
 			if (offset >= maxoffset)
 				continue;
-			offsets[k++] = offset;
+			minoffset = offsets[k++] = offset;
 			skip_bytes(ctx, stm, 4);
-			minoffset = fz_mini(minoffset, offsets[i]);
 		}
 		offsets[k] = (uint32_t)mobi->len;
 
 		// adjust n in case some out of bound offsets were skipped
 		n = k;
 		if (n == 0)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "no mobi records to read");
+			fz_throw(ctx, FZ_ERROR_FORMAT, "no mobi records to read");
 
 		// decompress text data
 		buffer = fz_new_buffer(ctx, 128 << 10);
-		extra = mobi_read_data(ctx, buffer, stm, offsets, n, format);
+		extra = mobi_read_data(ctx, buffer, stm, offsets, (uint32_t)n, format);
 		fz_terminate_buffer(ctx, buffer);
 
 #ifndef NDEBUG

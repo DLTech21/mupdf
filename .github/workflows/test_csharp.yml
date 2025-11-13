@@ -14,7 +14,7 @@ jobs:
       matrix:
         #os: [ubuntu-20.04, windows-2019, macos-10.15]
         # 2023-02-10: Clang-python appears to not find any functions on macos.
-        os: [ubuntu-20.04, windows-2019]
+        os: [ubuntu-latest, windows-latest]
 
       # Avoid cancelling of all runs after a single failure.
       fail-fast: false
@@ -44,7 +44,7 @@ jobs:
                 subprocess.run( command, shell=True, check=True)
 
             if platform.system() == 'Linux':
-                run(f'sudo apt install swig')
+                run(f'sudo apt install mono-devel')
 
             venv_name = 'pylocal'
 
@@ -54,8 +54,8 @@ jobs:
                 command += f' && .\\{venv_name}\\Scripts\\activate'
             else:
                 command += f' && . {venv_name}/bin/activate'
-            command += f' && python -m pip install -U pip libclang'
-            command += f' && python scripts/mupdfwrap.py --swig-windows-auto -b --csharp all --test-csharp'
+            command += f' && python -m pip install -U pip libclang swig setuptools'
+            command += f' && python scripts/mupdfwrap.py -b --csharp all --test-csharp'
 
             run( command)
 

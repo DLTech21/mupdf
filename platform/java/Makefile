@@ -95,10 +95,9 @@ $(LIBRARY_JAVA_OBJECTS) : $(LIBRARY_JAVA_SOURCES)
 $(EXAMPLE_JAVA_OBJECTS): $(EXAMPLE_JAVA_SOURCES)
 	$(JAVAC) $(JAVAC_FLAGS) -classpath ../../$(OUT) -d ../../$(OUT)/ $^
 
-REPATHED_LIBRARY_JAVA_OBJECTS := $(subst src/,,$(LIBRARY_JAVA_SOURCES:%.java=%.class))
 $(MUPDF_JAR) : $(LIBRARY_JAVA_OBJECTS)
 	rm -f $@
-	cd ../../$(OUT) && jar cf libmupdf.jar $(REPATHED_LIBRARY_JAVA_OBJECTS)
+	cd ../../$(OUT) && jar cf libmupdf.jar com
 
 mupdf_native.h : $(LIBRARY_JAVA_OBJECTS)
 	rm -f $@
@@ -111,6 +110,9 @@ mupdf_native.h : $(LIBRARY_JAVA_OBJECTS)
 $(MUPDF_JAVA) : ../../$(OUT)/mupdf_native.o $(MUPDF_CORE)
 	$(CC) -shared $(JAVA_LDFLAGS) -o $(MUPDF_JAVA) $^ $(JAVA_LIBS) $(BUILD_FLAGS)
 
+jshell: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
+	jshell --class-path ../../$(OUT)/ -R-Djava.library.path="../../$(OUT)" init.jshell $$MUPDF_ARGS
+
 run: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
 	$(JAVA) -classpath ../../$(OUT)/ -Djava.library.path="../../$(OUT)" example.Viewer $$MUPDF_ARGS
 
@@ -118,6 +120,12 @@ examples: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
 
 run-storytest: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
 	$(JAVA) -classpath ../../$(OUT)/ -Djava.library.path="../../$(OUT)" example.StoryTest $$MUPDF_ARGS
+
+run-tracedevice: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
+	$(JAVA) -classpath ../../$(OUT)/ -Djava.library.path="../../$(OUT)" example.TraceDevice $$MUPDF_ARGS
+
+run-pdftrace: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
+	$(JAVA) -classpath ../../$(OUT)/ -Djava.library.path="../../$(OUT)" example.PDFTrace $$MUPDF_ARGS
 
 run-example: $(MUPDF_JAVA) $(EXAMPLE_JAVA_OBJECTS) $(MUPDF_JAR)
 	$(JAVA) -classpath ../../$(OUT)/ -Djava.library.path="../../$(OUT)" example.Example $$MUPDF_ARGS

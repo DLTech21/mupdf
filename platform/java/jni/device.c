@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2024 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -292,10 +292,12 @@ fz_java_device_begin_mask(fz_context *ctx, fz_device *dev, fz_rect rect, int lum
 }
 
 static void
-fz_java_device_end_mask(fz_context *ctx, fz_device *dev)
+fz_java_device_end_mask(fz_context *ctx, fz_device *dev, fz_function *tr)
 {
 	fz_java_device *jdev = (fz_java_device *)dev;
 	JNIEnv *env = jdev->env;
+
+	// TODO: pass transfer function
 
 	(*env)->CallVoidMethod(env, jdev->self, mid_Device_endMask);
 	if ((*env)->ExceptionCheck(env))
@@ -327,7 +329,7 @@ fz_java_device_end_group(fz_context *ctx, fz_device *dev)
 }
 
 static int
-fz_java_device_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id)
+fz_java_device_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep, fz_matrix ctm, int id, int doc_id)
 {
 	fz_java_device *jdev = (fz_java_device *)dev;
 	JNIEnv *env = jdev->env;
@@ -336,7 +338,7 @@ fz_java_device_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect
 	jobject jctm = to_Matrix(ctx, env, ctm);
 	int res;
 
-	res = (*env)->CallIntMethod(env, jdev->self, mid_Device_beginTile, jarea, jview, xstep, ystep, jctm, (jint)id);
+	res = (*env)->CallIntMethod(env, jdev->self, mid_Device_beginTile, jarea, jview, xstep, ystep, jctm, (jint)id, (jint)doc_id);
 	if ((*env)->ExceptionCheck(env))
 		fz_throw_java(ctx, env);
 
@@ -378,7 +380,7 @@ fz_java_device_set_default_colorspaces(fz_context *ctx, fz_device *dev, fz_defau
 }
 
 static void
-fz_java_device_begin_structure(fz_context *ctx, fz_device *dev, fz_structure standard, const char *raw, int uid)
+fz_java_device_begin_structure(fz_context *ctx, fz_device *dev, fz_structure standard, const char *raw, int idx)
 {
 	fz_java_device *jdev = (fz_java_device *)dev;
 	JNIEnv *env = jdev->env;
@@ -388,7 +390,7 @@ fz_java_device_begin_structure(fz_context *ctx, fz_device *dev, fz_structure sta
 	if (!jraw || (*env)->ExceptionCheck(env))
 		fz_throw_java(ctx, env);
 
-	(*env)->CallVoidMethod(env, jdev->self, mid_Device_beginStructure, standard, jraw, uid);
+	(*env)->CallVoidMethod(env, jdev->self, mid_Device_beginStructure, standard, jraw, idx);
 	if ((*env)->ExceptionCheck(env))
 		fz_throw_java(ctx, env);
 }

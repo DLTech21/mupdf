@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2021 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -85,8 +85,8 @@ template_affine_alpha_N_lerp(byte * FZ_RESTRICT dp, int da, const byte * FZ_REST
 				int t = 255 - xa;
 				for (k = 0; k < sn1; k++)
 				{
-					int x = bilerp(a[k], b[k], c[k], d[k], uf, vf);
-					dp[k] = fz_mul255(x, alpha) + fz_mul255(dp[k], t);
+					int z = bilerp(a[k], b[k], c[k], d[k], uf, vf);
+					dp[k] = fz_mul255(z, alpha) + fz_mul255(dp[k], t);
 				}
 				for (; k < dn1; k++)
 					dp[k] = 0;
@@ -135,8 +135,8 @@ template_affine_alpha_N_lerp_op(byte * FZ_RESTRICT dp, int da, const byte * FZ_R
 				{
 					if (fz_overprint_component(eop, k))
 					{
-						int x = bilerp(a[k], b[k], c[k], d[k], uf, vf);
-						dp[k] = fz_mul255(x, alpha) + fz_mul255(dp[k], t);
+						int z = bilerp(a[k], b[k], c[k], d[k], uf, vf);
+						dp[k] = fz_mul255(z, alpha) + fz_mul255(dp[k], t);
 					}
 				}
 				for (; k < dn1; k++)
@@ -3568,7 +3568,6 @@ fz_paint_affine_color_lerp(int da, int sa, affint fa, affint fb, int n, int alph
 	default: return da ? paint_affine_color_lerp_da_N : paint_affine_color_lerp_N;
 #endif /* FZ_PLOTTERS_N */
 	}
-	return NULL;
 }
 
 #if FZ_ENABLE_SPOT_RENDERING
@@ -4041,7 +4040,7 @@ fz_paint_image_imp(fz_context *ctx,
 	}
 
 #if FZ_PLOTTERS_RGB
-	if (dn == 3 && img->n == 1 + sa && !color && !fz_overprint_required(eop))
+	if (dn == 3 && dst->s == 0 && img->n == 1 + sa && !color && !fz_overprint_required(eop))
 	{
 		if (dolerp)
 			paintfn = fz_paint_affine_g2rgb_lerp(da, sa, fa, fb, dn, alpha);

@@ -1,4 +1,4 @@
-// Copyright (C) 2004-2023 Artifex Software, Inc.
+// Copyright (C) 2004-2025 Artifex Software, Inc.
 //
 // This file is part of MuPDF.
 //
@@ -524,6 +524,34 @@ fz_bitmap *fz_new_bitmap_from_pixmap(fz_context *ctx, fz_pixmap *pix, fz_halfton
 	return fz_new_bitmap_from_pixmap_band(ctx, pix, ht, 0);
 }
 
+fz_bitmap *fz_new_bitmap_from_image(fz_context *ctx, fz_image *img, fz_halftone *ht)
+{
+	fz_pixmap *pix = fz_get_pixmap_from_image(ctx, img, NULL, NULL, NULL, NULL);
+	fz_bitmap *bitmap;
+	fz_try(ctx)
+		bitmap = fz_new_bitmap_from_pixmap_band(ctx, pix, ht, 0);
+	fz_always(ctx)
+		fz_drop_pixmap(ctx, pix);
+	fz_catch(ctx)
+		fz_rethrow(ctx);
+	return bitmap;
+}
+
+
+void fz_invert_bitmap(fz_context *ctx, fz_bitmap *bmp)
+{
+	unsigned char *s = bmp->samples;
+	int w, h, w2 = (bmp->w+7)>>3;
+
+	for (h = bmp->h; h > 0; h--)
+	{
+		unsigned char *t = s;
+		for (w = w2; w > 0; w--)
+			*t++ ^= 255;
+		s += bmp->stride;
+	}
+}
+
 /* TAOCP, vol 2, p337 */
 static int gcd(int u, int v)
 {
@@ -563,7 +591,7 @@ fz_bitmap *fz_new_bitmap_from_pixmap_band(fz_context *ctx, fz_pixmap *pix, fz_ha
 	n -= alpha;
 
 	if (alpha != 0)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "pixmap may not have alpha channel to convert to bitmap");
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "pixmap may not have alpha channel to convert to bitmap");
 
 	switch(n)
 	{
@@ -574,8 +602,7 @@ fz_bitmap *fz_new_bitmap_from_pixmap_band(fz_context *ctx, fz_pixmap *pix, fz_ha
 		thresh = do_threshold_4;
 		break;
 	default:
-		fz_throw(ctx, FZ_ERROR_GENERIC, "pixmap must be grayscale or CMYK to convert to bitmap");
-		return NULL;
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "pixmap must be grayscale or CMYK to convert to bitmap");
 	}
 
 	if (ht == NULL)
